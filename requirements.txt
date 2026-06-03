@@ -1,0 +1,10 @@
+aiohttp
+beautifulsoup4
+httpx[http2]>=0.25.0
+orjson>=3.9.0
+fastapi
+uvicorn[standard]
+kurigram
+redis[asyncio]>=4.2
+tgcrypto
+yt-dlp[default]

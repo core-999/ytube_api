@@ -1,0 +1,25 @@
+services:
+  ytmusic-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ytmusic-api:latest
+    container_name: ytmusic-api
+    restart: always
+    networks:
+      - web
+    environment:
+      - VIRTUAL_HOST=api.nubcoder.com
+      - LETSENCRYPT_HOST=api.nubcoder.com
+      - LETSENCRYPT_EMAIL=dev@nubcoder.com
+    volumes:
+      - ${HOME}/.mozilla/firefox:/root/.mozilla/firefox:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+networks:
+  web:
+    external: true

@@ -2,7 +2,7 @@ import asyncio
 import argparse
 import os
 
-from yt_dlp_api import (
+from . import (
     Search,
     get_stream,
     __version__,
@@ -20,7 +20,7 @@ async def run_search(query: str, fetch_stream: bool = False, cookies: str | None
         print(f"Current version: {update_info['current_version']}")
         print("Run: git pull && restart\n")
 
-    results = await fetch_results(query, limit=1)
+    results = await Search(query, limit=1)
 
     if not results or not results.get("main_results"):
         print("No results found.")

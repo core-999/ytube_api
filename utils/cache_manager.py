@@ -118,3 +118,104 @@ async def _run_yt_dlp(url: str, format_selector: str, cookies: str | None):
         cmd.insert(2, "firefox")
 
     logger.info(f"[YT-DLP] Running: {' '.join(cmd)}")
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(
+            process.communicate(),
+            timeout=40,
+        )
+        if process.returncode == 0 and stdout:
+            return stdout.decode().strip().split("\n")[0]
+        else:
+            err = stderr.decode().strip() if stderr else "unknown error"
+            logger.error(f"[YT-DLP] Failed: {err}")
+            return None
+    except Exception as e:
+        logger.error(f"[YT-DLP] Exception: {e}")
+        return None
+
+
+async def get_stream(url: str, cookies: str | None = None) -> str | None:
+    prefix = "audio:"
+    
+    # 1. Read from Redis cache (if redis available)
+    redis = await _get_redis()
+    if redis:
+        try:
+            cached_url = await redis.get(f"cache:{prefix}{url}")
+            if cached_url:
+                logger.info(f"[REDIS CACHE HIT] {prefix}{url[:80]}...")
+                return cached_url
+        except Exception as e:
+            logger.error(f"[REDIS GET ERROR] {e}")
+
+    # 2. Read from local file cache
+    cached_url, remaining_ttl = _read_cache(url, prefix)
+    if cached_url:
+        # Re-populate Redis if we missed it
+        if redis:
+            try:
+                await redis.setex(f"cache:{prefix}{url}", remaining_ttl, cached_url)
+            except Exception:
+                pass
+        return cached_url
+
+    # 3. Resolve using yt-dlp
+    stream_url = await _run_yt_dlp(url, "251/250/bestaudio[ext=m4a]/bestaudio", cookies)
+    if stream_url:
+        # 4. Write cache
+        _write_cache(url, stream_url, prefix)
+        expire = _extract_expire(stream_url)
+        if expire and redis:
+            ttl = int(expire - time.time())
+            if ttl > 0:
+                try:
+                    await redis.setex(f"cache:{prefix}{url}", ttl, stream_url)
+                except Exception:
+                    pass
+    return stream_url
+
+
+async def get_video_stream(url: str, cookies: str | None = None) -> str | None:
+    prefix = "video:"
+    
+    # 1. Read from Redis cache
+    redis = await _get_redis()
+    if redis:
+        try:
+            cached_url = await redis.get(f"cache:{prefix}{url}")
+            if cached_url:
+                logger.info(f"[REDIS CACHE HIT] {prefix}{url[:80]}...")
+                return cached_url
+        except Exception as e:
+            logger.error(f"[REDIS GET ERROR] {e}")
+
+    # 2. Read from local file cache
+    cached_url, remaining_ttl = _read_cache(url, prefix)
+    if cached_url:
+        if redis:
+            try:
+                await redis.setex(f"cache:{prefix}{url}", remaining_ttl, cached_url)
+            except Exception:
+                pass
+        return cached_url
+
+    # 3. Resolve using yt-dlp
+    stream_url = await _run_yt_dlp(url, "22/18/best[ext=mp4]", cookies)
+    if stream_url:
+        # 4. Write cache
+        _write_cache(url, stream_url, prefix)
+        expire = _extract_expire(stream_url)
+        if expire and redis:
+            ttl = int(expire - time.time())
+            if ttl > 0:
+                try:
+                    await redis.setex(f"cache:{prefix}{url}", ttl, stream_url)
+                except Exception:
+                    pass
+    return stream_url
+

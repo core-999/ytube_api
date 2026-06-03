@@ -13,7 +13,7 @@ This repository provides a unified FastAPI backend and a Pyrogram-based Telegram
 - 🇩 **EJS Challenge Solver**: Integrated Deno JS runtime inside the container to solve complex YouTube EJS signature challenges dynamically.
 - 🗄️ **Redis Caching**: Caches stream metadata, resolving configurations, and rates to minimize latency and avoid YouTube rate limits.
 - 🔒 **Token-Based Rate Limiting**: Automatic user rate limiting managed via a Redis-backed token system.
-- 🤖 **Telegram Bot Management**: Simple Telegram bot for users to generate tokens, check limits, and for admins to manage users, customize rate limits, broadcast messages, and view real-time API logs.
+- 🤖 **Telegram Bot Management**: Simple Telegram bot for users to generate tokens, check limits, and for admins to manage users, customize rate limits, broadcast announcements, and view real-time API logs.
 - 🐳 **Docker-Compose Ready**: Easy, zero-config deployment using Docker Compose.
 
 ---
@@ -24,18 +24,18 @@ This repository provides a unified FastAPI backend and a Pyrogram-based Telegram
                +-----------------------+
                |  FastAPI Web Service  | <--- REST API Clients
                +-----------------------+
-                           |
-                           v
-+--------------+     +-----------+     +-------------------+
-| Telegram Bot | --> |   Redis   | <-- | yt_dlp_api Module |
-+--------------+     +-----------+     +-------------------+
+                            |
+                            v
+ +--------------+     +-----------+     +-------------------+
+ | Telegram Bot | --> |   Redis   | <-- |    utils Module   |
+ +--------------+     +-----------+     +-------------------+
   (User/Token          (Rate Limits          (Search, Stream
    Management)          & Caching)            & Playlist Parsing)
-                                             |
-                                             v
-                                       +-------------+
-                                       | Deno / Yt   |
-                                       +-------------+
+                                              |
+                                              v
+                                        +-------------+
+                                        | Deno / Yt   |
+                                        +-------------+
 ```
 
 ---
@@ -55,6 +55,9 @@ Create a `.env` file in the root directory and configure your credentials:
 API_ID=21856699
 API_HASH=73f10cf0979637857170f03d4c86f251
 BOT_TOKEN=your_bot_token
+
+# Space-separated list of Telegram user IDs with administrative rights
+ADMIN_IDS="6076474757 2128132096"
 
 # Redis Configuration (Optional: default uses redis service container)
 REDIS_HOST=redis
@@ -96,13 +99,15 @@ pip install -r requirements.txt
 ```
 
 ### 3. Run the Services
-Run the Redis server locally, and then start the API and Bot separately:
+Run the Redis server locally, and then start the API and Bot:
 
 ```bash
-# Start the Web API
+# Start the API and Bot services concurrently
 python3 main.py
+```
 
-# Start the Telegram Bot
+Or you can run the bot separately:
+```bash
 python3 bot.py
 ```
 
@@ -110,19 +115,20 @@ python3 bot.py
 
 ## Configuration Reference
 
-All secrets and tunables are centralised in `config.py` and can be customized via environment variables:
+All secrets and configurations can be customized via environment variables:
 
 | Environment Variable | Description | Default |
 |----------------------|-------------|---------|
-| `API_ID` | Telegram API ID (from my.telegram.org) | `21856699` |
-| `API_HASH` | Telegram API Hash (from my.telegram.org) | `73f10cf09796...` |
-| `BOT_TOKEN` | Token for the Pyrogram bot | `8246299769...` |
+| `API_ID` | Telegram API ID (from my.telegram.org) | `2040` |
+| `API_HASH` | Telegram API Hash (from my.telegram.org) | `b18441a1ff...` |
+| `BOT_TOKEN` | Token for the Pyrogram bot | `None` |
 | `TG_GROUP` | Telegram support/discussion group username | `nub_coder_s` |
 | `TG_CHANNEL` | Telegram news/update channel username | `nub_coders` |
-| `REDIS_HOST` | Hostname of the Redis server | `redis-15440...` |
+| `ADMIN_IDS` | Space-separated list of admin Telegram IDs | `""` |
+| `REDIS_HOST` | Hostname of the Redis server | `localhost` |
 | `REDIS_PORT` | Port of the Redis server | `15440` |
 | `REDIS_USERNAME`| Username for Redis authentication | `default` |
-| `REDIS_PASSWORD`| Password for Redis authentication | `Af1Y9RyLA...` |
+| `REDIS_PASSWORD`| Password for Redis authentication | `None` |
 | `DAILY_LIMIT` | Default daily requests limit for free tier users | `1000` |
 | `ADMIN_LIMIT` | Default daily requests limit for administrators | `10000` |
 
@@ -130,59 +136,76 @@ All secrets and tunables are centralised in `config.py` and can be customized vi
 
 ## Web API Endpoints
 
-The web API is served at `http://localhost:8000`. By default, public endpoints are free, while data-heavy parsing endpoints require an authentication token generated via the Telegram Bot.
+The web API is served at `http://localhost:8000`. Public endpoints are free, while data-heavy parsing endpoints require an API token passed as a query parameter (e.g., `?token=YOUR_TOKEN`).
 
-### Public Endpoints
+### Public Endpoints (Free)
 
 #### `GET /health`
 Returns service health status.
-- **Response**: `{"status": "healthy"}`
+- **Response**: `{"status": "ok"}`
 
 #### `GET /`
-Returns service info, endpoint directory, and redirects configuration.
+Returns service metadata and an endpoint directory.
 
 #### `GET /search`
-Perform queries on YouTube / YouTube Music.
+Perform queries on YouTube or YouTube Music.
 - **Parameters**:
   - `q` (string, required): Query term.
-  - `limit` (integer, optional): Maximum results. Default `10`.
-- **Response**: Main results and list items.
+  - `limit` (integer, optional): Maximum results. Default `5`.
+  - `method` (string, optional): `'scrape'` (free crawler, default) or `'api'` (official YouTube Data API).
+- **Response**: Search result list with titles, URLs, duration, and channel metadata.
 
 #### `GET /trending`
 Get trending music tracks.
 - **Parameters**:
-  - `limit` (integer, optional): Maximum results. Default `20`.
+  - `limit` (integer, optional): Maximum results. Default `10`.
 
 #### `GET /suggest`
 Get search completion suggestions for a partial query.
 - **Parameters**:
   - `q` (string, required): Partial query.
-  - `limit` (integer, optional): Maximum suggestions. Default `10`.
+  - `limit` (integer, optional): Maximum suggestions. Default `5`.
 
 ---
 
 ### Authenticated Endpoints
-*Must include header: `token: YOUR_TELEGRAM_BOT_TOKEN`*
+*Must include query parameter: `token=YOUR_API_TOKEN`*
 
 #### `GET /rate-limit-status`
 Check your current token request usage and remaining quota.
 
 #### `GET /info`
-Get raw metadata information of a specific YouTube video.
+Get parsed metadata and direct streaming links for a video.
 - **Parameters**:
-  - `video_id` (string, required): YouTube video ID.
+  - `q` (string, required): YouTube video URL or search query.
+  - `max_results` (integer, optional): Max search results if `q` is a query. Default `1`.
+  - `mode` (string, optional): `'audio'` (default) or `'video'`.
+  - `redirect` (boolean, optional): Return a temporary redirect URL or wait for extraction. Default `True`.
 
 #### `GET /stream`
-Resolve and return direct audio stream URLs.
+Resolve and return direct audio/video stream URLs.
 - **Parameters**:
-  - `url` (string, required): YouTube video URL or ID.
-- **Response**: `{"url": "DIRECT_AUDIO_STREAM_URL"}`
+  - `q` (string, required): YouTube video URL or ID.
+  - `mode` (string, optional): `'audio'` (default) or `'video'`.
+  - `redirect` (boolean, optional): Return a temporary redirect URL. Default `False`.
+
+#### `GET /stream/redirect`
+Get an instant redirect URL for audio streaming (ideal for `pytgcall` integrations).
+- **Parameters**:
+  - `q` (string, required): YouTube video URL or ID.
+  - `mode` (string, optional): `'audio'` (default) or `'video'`.
 
 #### `GET /video-stream`
-Resolve and return both video and audio stream URLs.
+Resolve and return separate high-quality video and audio URLs.
 - **Parameters**:
-  - `url` (string, required): YouTube video URL or ID.
-- **Response**: `{"video_url": "...", "audio_url": "..."}`
+  - `q` (string, required): YouTube video URL or ID.
+  - `redirect` (boolean, optional): Return a temporary redirect URL. Default `False`.
+
+#### `GET /video-stream/redirect`
+Get an instant redirect URL for video streaming.
+- **Parameters**:
+  - `q` (string, required): YouTube video URL or ID.
+  - `type` (string, optional): `'audio'` (default) or `'video'`.
 
 #### `GET /playlist`
 Parse all video tracks in a playlist.
@@ -193,7 +216,7 @@ Parse all video tracks in a playlist.
 
 ## Telegram Bot Interface
 
-Users must message the Telegram bot (e.g. `@ytdlp_nub_bot`) to obtain an API token and manage their usage.
+Users can interact with the Telegram bot (e.g. `@ytdlp_nub_bot`) to obtain an API token and monitor their request counts.
 
 ### User Commands
 - `/start` - Authenticates user, creates account, and issues an API token.
@@ -201,8 +224,10 @@ Users must message the Telegram bot (e.g. `@ytdlp_nub_bot`) to obtain an API tok
 - `/token` - Displays the user's active API token.
 - `/status` - Checks current rate limits, tier, and requested endpoint counts.
 - `/ping` - Latency ping check with bot uptime statistics.
+- `/revoke` - Revokes your current token and generates a new one.
+- `/help` - Show help and API documentation.
 
-### Administrative Commands
+### Administrative Commands (Admins only)
 - `/stats` - Comprehensive API performance dashboard (requests, uptime, user tiers, active logs).
 - `/user <tg_id>` - Inspect usage statistics and rate limit status of a specific user.
 - `/grant <tg_id> <limit>` - Set custom daily rate limit for a specific user.
@@ -214,18 +239,17 @@ Users must message the Telegram bot (e.g. `@ytdlp_nub_bot`) to obtain an API tok
 
 ---
 
-## Using `yt_dlp_api` in Code
+## Programmatic Usage
 
-If you prefer to import the modules programmatically inside other Python scripts, use the `yt_dlp_api` package:
+If you prefer to import the modules programmatically inside other Python scripts, use the `utils` package:
 
 ```python
 import asyncio
-from utils.search_service import fetch_results
-from utils.cache_manager import get_stream
+from utils import Search, get_stream
 
 async def main():
     # 1. Search song
-    results = await fetch_results("Kesariya", limit=1)
+    results = await Search("Kesariya", limit=1)
     if results and results.get("main_results"):
         song = results["main_results"][0]
         print(f"Found: {song['title']} by {song['channel']}")
@@ -245,20 +269,20 @@ asyncio.run(main())
 yt-dlp_api/
 │
 ├── config.py              # Centralised environment variable loader
-├── main.py                # FastAPI endpoints and middleware
-├── bot.py                 # Pyrogram client initializer
+├── main.py                # FastAPI endpoints and middleware / bot runner
+├── bot.py                 # Bot startup script
 ├── tools.py               # Redis client connection and token handlers
 │
-├── yt_dlp_api/            # Core library python package
-│   ├── __init__.py
-│   ├── Search.py          # Scraping-based search functions
-│   ├── YtSearch.py        # YouTube Data API backup search
-│   ├── Stream.py          # Audio stream extraction
-│   ├── Video_Stream.py    # Video stream extraction
-│   ├── Playlist.py        # Playlist parser
-│   ├── Models.py          # JSON payload models
-│   ├── Utils.py           # Helper utilities
-│   └── cli.py             # CLI commands
+├── utils/                 # Shared utilities and parsers
+│   ├── __init__.py        # Package exports
+│   ├── cache_manager.py   # Stream cache resolver (Redis & Local)
+│   ├── cli_tool.py        # Command-line utility interface
+│   ├── formatters.py      # Video output list formatter
+│   ├── helpers.py         # Utility calculation functions
+│   ├── media_extractor.py # Audio/video link resolving logic (yt-dlp)
+│   ├── playlist_parser.py # Playlist item parser
+│   ├── search_service.py  # Scraping-based search crawler
+│   └── youtube_api.py     # Fallback YouTube Data API crawler
 │
 └── plugins/               # Telegram bot pyrogram plugins
     ├── admin.py           # Administrative stats, limits, and error logs

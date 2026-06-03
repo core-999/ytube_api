@@ -1,7 +1,9 @@
 import httpx
 import os
 import random
-from .formatters import format_dur, process_video
+import asyncio
+from .formatters import format_dur, process_video, extract_artist
+from .helpers import parse_dur, format_ind
 
 
 SEARCH_URL = "https://www.googleapis.com/youtube/v3/search"
@@ -79,3 +81,105 @@ async def fetch_results(query: str, limit: int = 1):
                 results.append(video_info)
 
         return results
+
+
+async def GetVideoById(video_id: str):
+    keys = get_available_keys()
+    if not keys:
+        # Fallback to extracting using yt-dlp -j (no API key needed)
+        try:
+            cmd = [
+                "yt-dlp",
+                "--js-runtimes", "node",
+                "--remote-components", "ejs:github",
+                "-j",
+                f"https://www.youtube.com/watch?v={video_id}"
+            ]
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(),
+                timeout=40,
+            )
+            if process.returncode == 0 and stdout:
+                import json as _json
+                info = _json.loads(stdout.decode().strip())
+                title = info.get("title", "")
+                uploader = info.get("uploader", "")
+                duration_sec = info.get("duration", 0) or 0
+                
+                # Format duration_sec to string
+                h = duration_sec // 3600
+                m = (duration_sec % 3600) // 60
+                s = duration_sec % 60
+                duration_str = f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+                views = info.get("view_count", 0) or 0
+                thumbnail = info.get("thumbnail", "")
+
+                artist = extract_artist(title) or uploader
+
+                return {
+                    "title": title,
+                    "url": f"https://www.youtube.com/watch?v={video_id}",
+                    "artist_name": artist,
+                    "channel_name": uploader,
+                    "views": format_ind(views),
+                    "duration": duration_str,
+                    "thumbnail": thumbnail,
+                    "video_id": video_id,
+                }
+        except Exception as e:
+            # log warning
+            pass
+        return {}
+
+    async with httpx.AsyncClient(timeout=10) as client:
+        api_key = get_random_key()
+
+        params = {
+            "part": "snippet,contentDetails,statistics",
+            "id": video_id,
+            "key": api_key,
+        }
+
+        res = await client.get(DETAILS_URL, params=params)
+        if res.status_code != 200:
+            return {}
+
+        items = res.json().get("items", [])
+        if not items:
+            return {}
+
+        item = items[0]
+        snippet = item.get("snippet", {})
+        title = snippet.get("title", "")
+        channel = snippet.get("channelTitle", "")
+        thumbnail = (
+            snippet.get("thumbnails", {})
+            .get("high", {})
+            .get("url", "")
+        )
+        duration = (
+            item.get("contentDetails", {})
+            .get("duration", "N/A")
+        )
+        views = (
+            item.get("statistics", {})
+            .get("viewCount", "0")
+        )
+        artist = extract_artist(title) or channel
+
+        return {
+            "title": title,
+            "url": f"https://www.youtube.com/watch?v={video_id}",
+            "artist_name": artist,
+            "channel_name": channel,
+            "views": format_ind(views),
+            "duration": parse_dur(duration),
+            "thumbnail": thumbnail,
+            "video_id": video_id,
+        }

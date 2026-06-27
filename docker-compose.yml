@@ -8,10 +8,12 @@ services:
     restart: always
     networks:
       - web
-    environment:
-      - VIRTUAL_HOST=api.nubcoder.com
-      - LETSENCRYPT_HOST=api.nubcoder.com
-      - LETSENCRYPT_EMAIL=dev@nubcoder.com
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.ytmusic-api.rule=Host(`api.nubcoder.com`)"
+      - "traefik.http.routers.ytmusic-api.entrypoints=websecure"
+      - "traefik.http.routers.ytmusic-api.tls.certresolver=letsencrypt"
+      - "traefik.http.services.ytmusic-api.loadbalancer.server.port=8000"
     volumes:
       - ${HOME}/.mozilla/firefox:/root/.mozilla/firefox:ro
     healthcheck:

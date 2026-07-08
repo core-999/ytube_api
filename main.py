@@ -12,13 +12,17 @@ from collections import defaultdict
 import uvicorn
 import threading
 from pyrogram import Client, idle
+import inspect
+from fastapi.routing import APIRoute
+from fastapi.params import Depends as DependsParam
+from pydantic.fields import FieldInfo
+from fastapi.exceptions import RequestValidationError
+from fastapi.encoders import jsonable_encoder
+from starlette.routing import Match
+from starlette.responses import Response
 
 # Telegram Bot Configuration
-API_ID = 21856699
-API_HASH = '73f10cf0979637857170f03d4c86f251'
-BOT_TOKEN = '8246299769:AAF2jRzQBJmkOqL_146jKG0EjWbeTSC78eU'
-GROUP = "nub_coder_s"
-CHANNEL = "nub_coders"
+from config import API_ID, API_HASH, BOT_TOKEN, GROUP, CHANNEL
 
 # Import shared tools
 from tools import (
@@ -187,12 +191,15 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         user_id = await get_current_user(token)
 
         if not user_id:
+            required_args, optional_args = get_arguments_for_request(request)
             return JSONResponse(
                 status_code=401,
-                content={
+                content=jsonable_encoder({
                     "error":   "Token required",
                     "message": "Get your token from @ytdlp_nub_bot using /start",
-                },
+                    "required_arguments": required_args,
+                    "optional_arguments": optional_args,
+                }),
             )
 
         user_limit = ADMIN_LIMIT if is_admin(user_id) else DAILY_LIMIT
@@ -265,6 +272,128 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         response.headers["X-RateLimit-Reset"]     = str(reset_ts)
 
         return response
+
+
+def clean_type_name(annotation) -> str:
+    if annotation == inspect.Parameter.empty:
+        return "any"
+    
+    # Handle typing wrappers like Optional, Union, etc.
+    origin = getattr(annotation, "__origin__", None)
+    if origin is not None:
+        args = getattr(annotation, "__args__", [])
+        non_none_args = [arg for arg in args if arg is not type(None)]
+        if len(non_none_args) == 1:
+            return clean_type_name(non_none_args[0])
+        elif len(non_none_args) > 1:
+            return " | ".join(clean_type_name(arg) for arg in non_none_args)
+            
+    name = getattr(annotation, "__name__", str(annotation))
+    if name == "str":
+        return "string"
+    if name == "int":
+        return "integer"
+    if name == "bool":
+        return "boolean"
+    if name == "float":
+        return "number"
+    return name
+
+
+def get_endpoint_args(route: APIRoute):
+    required_args = {}
+    optional_args = {}
+    
+    sig = inspect.signature(route.endpoint)
+    for name, param in sig.parameters.items():
+        # Skip internal parameter types like Request or Response
+        if param.annotation in (Request, Response) or name in ("request", "response"):
+            continue
+        # Skip dependencies
+        if isinstance(param.default, DependsParam):
+            continue
+            
+        param_type = clean_type_name(param.annotation)
+        description = ""
+        param_in = "query"
+        
+        # Check if it's a path parameter
+        if f"{{{name}}}" in route.path:
+            param_in = "path"
+            
+        if isinstance(param.default, FieldInfo):
+            is_req = param.default.is_required()
+            default_val = param.default.default
+            # Handle PydanticUndefined default value
+            if default_val == ... or default_val.__class__.__name__ == "PydanticUndefined":
+                default_val = None
+            description = param.default.description or ""
+            
+            # Determine location from FieldInfo type
+            from fastapi.params import Query, Path, Header, Cookie, Body
+            if isinstance(param.default, Path):
+                param_in = "path"
+            elif isinstance(param.default, Query):
+                param_in = "query"
+            elif isinstance(param.default, Header):
+                param_in = "header"
+            elif isinstance(param.default, Cookie):
+                param_in = "cookie"
+            elif isinstance(param.default, Body):
+                param_in = "body"
+        else:
+            is_req = (param.default == inspect.Parameter.empty)
+            default_val = None if is_req else param.default
+
+        info = {
+            "type": param_type,
+            "in": param_in,
+        }
+        if description:
+            info["description"] = description
+            
+        if is_req:
+            required_args[name] = info
+        else:
+            info["default"] = default_val
+            optional_args[name] = info
+            
+    return required_args, optional_args
+
+
+def get_arguments_for_request(request: Request):
+    required_args = {}
+    optional_args = {}
+    
+    route = request.scope.get("route")
+    if not route:
+        for r in request.app.routes:
+            match, _ = r.matches(request.scope)
+            if match == Match.FULL:
+                route = r
+                break
+                
+    if route and isinstance(route, APIRoute):
+        required_args, optional_args = get_endpoint_args(route)
+        
+    return required_args, optional_args
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    required_args, optional_args = get_arguments_for_request(request)
+    
+    return JSONResponse(
+        status_code=422,
+        content=jsonable_encoder({
+            "error": "Validation Error",
+            "message": "The endpoint was used incorrectly. Please verify the arguments below.",
+            "details": exc.errors(),
+            "endpoint": request.url.path,
+            "required_arguments": required_args,
+            "optional_arguments": optional_args
+        })
+    )
 
 
 app.add_middleware(RateLimitMiddleware)

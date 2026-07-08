@@ -11,6 +11,7 @@ from tools import (
     set_user_token, revoke_user_token, get_user_request_count,
     set_user_request_count, increment_user_requests
 )
+from config import BASE_URL
 
 BOT_START_TIME = time.time()
 
@@ -25,6 +26,10 @@ def get_readable_time(seconds: int) -> str:
     elif m > 0:
         return f"{m}m {s}s"
     return f"{s}s"
+
+
+def api_url(path: str = "") -> str:
+    return f"{BASE_URL}/{path.lstrip('/')}" if path else BASE_URL
 
 @Client.on_message(filters.command("start"))
 async def start_command(client: Client, message: Message):
@@ -54,10 +59,10 @@ async def start_command(client: Client, message: Message):
             f"✅ Your API is ready to use!\n"
             f"🔗 Token: `{existing_token}`\n\n"
             f"🌐 **API Base URL:**\n"
-            f"`http://api.nubcoder.com/`\n\n"
+            f"`{api_url()}/`\n\n"
             f"📝 **Usage:**\n"
             f"Add your token as a query parameter:\n"
-            f"`http://api.nubcoder.com/info?token={existing_token}&q=VIDEO_URL`\n\n"
+            f"`{api_url('info')}?token={existing_token}&q=VIDEO_URL`\n\n"
             f"📈 **Daily Limit:** 1000 requests\n"
             f"🔍 **Search:** Always free!",
             reply_markup=keyboard
@@ -71,10 +76,10 @@ async def start_command(client: Client, message: Message):
             f"🎉 **Welcome to YT-DLP API, {username}!**\n\n"
             f"🔑 Your API token: `{new_token}`\n\n"
             f"🌐 **API Base URL:**\n"
-            f"`http://api.nubcoder.com/`\n\n"
+            f"`{api_url()}/`\n\n"
             f"📝 **How to use:**\n"
             f"Add your token as a query parameter:\n"
-            f"`http://api.nubcoder.com/info?token={new_token}&q=VIDEO_URL`\n\n"
+            f"`{api_url('info')}?token={new_token}&q=VIDEO_URL`\n\n"
             f"📈 **Daily Limit:** 1000 requests\n"
             f"🔍 **Search:** Always free!\n\n"
             f"🚀 **Get started:** Use the buttons below!",
@@ -218,19 +223,19 @@ async def handle_callbacks(client: Client, callback_query: CallbackQuery):
             "• `/token` - View current token\n"
             "• `/revoke` - Revoke current token\n\n"
             "🌐 **API Base URL:**\n"
-            "`http://api.nubcoder.com/`\n\n"
+            f"`{api_url()}/`\n\n"
             "🔗 **API Endpoints:**\n"
             "• `/info` - Get video info + streamable URL (requires token)\n"
             "• `/search` - Search videos (free, no URLs)\n"
             "\n"
             "• `/health` - Health check\n\n"
             "📝 **Usage:**\n"
-            f"Example: `http://api.nubcoder.com/info?token={user_token}&q=VIDEO_URL`\n\n"
+            f"Example: `{api_url('info')}?token={user_token}&q=VIDEO_URL`\n\n"
             "🐍 **Python Example:**\n"
             "```python\n"
             "import requests\n"
             "response = requests.get(\n"
-            "    'http://api.nubcoder.com/info',\n"
+            f"    '{api_url('info')}',\n"
             f"    params={{'token': '{user_token}', 'q': 'VIDEO_URL'}}\n"
             ")\n"
             "data = response.json()\n"
@@ -248,19 +253,19 @@ async def handle_callbacks(client: Client, callback_query: CallbackQuery):
             "🌐 **All API Endpoints - GET Examples**\n\n"
             "**1. Video Info:**\n"
             "```\n"
-            f"GET http://api.nubcoder.com/info?token={user_token}&q=https://youtube.com/watch?v=dQw4w9WgXcQ\n"
+            f"GET {api_url('info')}?token={user_token}&q=https://youtube.com/watch?v=dQw4w9WgXcQ\n"
             "```\n\n"
             "**2. Search Videos (Free):**\n"
             "```\n"
-            f"GET http://api.nubcoder.com/search?q=python tutorial&max_results=5\n"
+            f"GET {api_url('search')}?q=python tutorial&max_results=5\n"
             "```\n\n"
             "**4. Rate Limit Status:**\n"
             "```\n"
-            f"GET http://api.nubcoder.com/rate-limit-status?token={user_token}\n"
+            f"GET {api_url('rate-limit-status')}?token={user_token}\n"
             "```\n\n"
             "**5. Health Check:**\n"
             "```\n"
-            "GET http://api.nubcoder.com/health\n"
+            f"GET {api_url('health')}\n"
             "```",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔙 Back to Implementation", callback_data="api_implementation")]
@@ -279,7 +284,7 @@ async def handle_callbacks(client: Client, callback_query: CallbackQuery):
             "from typing import List, Dict, Optional, Tuple\n"
             "from datetime import datetime\n\n"
             f"API_TOKEN = '{user_token}'\n"
-            "BASE_URL = 'http://api.nubcoder.com'\n\n"
+            f"BASE_URL = '{api_url()}'\n\n"
             "def get_video_info(url_or_query: str, max_results: int = 1) -> Tuple[str, str, int, str, str, int, str, str, str]:\n"
             "    \"\"\"Get video info - returns (title, video_id, duration, youtube_link, channel_name, views, stream_url, thumbnail, time_taken)\"\"\"\n"
             "    try:\n"
@@ -366,7 +371,7 @@ async def handle_callbacks(client: Client, callback_query: CallbackQuery):
         await callback_query.edit_message_text(
             "📋 **Quick Reference**\n\n"
             f"🔑 **Token:** `{user_token}`\n"
-            f"🌐 **Base URL:** `http://api.nubcoder.com`\n\n"
+            f"🌐 **Base URL:** `{api_url()}`\n\n"
             "**Endpoints:**\n"
             f"• `/info?token={user_token}&q=URL` - ✅ Video info + STREAM URL\n"
             "• `/search?q=QUERY&max_results=5` - ❌ Search only (NO STREAM)\n"
@@ -379,7 +384,7 @@ async def handle_callbacks(client: Client, callback_query: CallbackQuery):
             "**Python Quick Start:**\n"
             "```python\n"
             "import requests\n"
-            f"r = requests.get('http://api.nubcoder.com/info?token={user_token}&q=VIDEO_URL')\n"
+            f"r = requests.get('{api_url('info')}?token={user_token}&q=VIDEO_URL')\n"
             "data = r.json()\n"
             "```",
             reply_markup=InlineKeyboardMarkup([
@@ -391,7 +396,7 @@ async def handle_callbacks(client: Client, callback_query: CallbackQuery):
         await callback_query.answer()
         await callback_query.edit_message_text(
             "📖 **API Documentation**\n\n"
-            "🔗 **Base URL:** `http://api.nubcoder.com/`\n\n"
+            f"🔗 **Base URL:** `{api_url()}/`\n\n"
             "📝 **Authentication:**\n"
             "Add your token as query parameter:\n"
             "```\n"
@@ -421,7 +426,7 @@ async def handle_callbacks(client: Client, callback_query: CallbackQuery):
         await callback_query.answer()
         await callback_query.edit_message_text(
             "🎥 **Video Info Endpoint**\n\n"
-            "**Endpoint:** `http://api.nubcoder.com/info`\n"
+            f"**Endpoint:** `{api_url('info')}`\n"
             "**Method:** `GET`\n"
             "**Auth:** Token required\n"
             "**Returns:** ✅ Video metadata + **DIRECT STREAM URL**\n\n"
@@ -446,19 +451,19 @@ async def handle_callbacks(client: Client, callback_query: CallbackQuery):
             "🌐 **Video Info - GET Examples**\n\n"
             "**1. Get info by URL:**\n"
             "```\n"
-            f"GET http://api.nubcoder.com/info?token={user_token}&q=https://youtube.com/watch?v=dQw4w9WgXcQ\n"
+            f"GET {api_url('info')}?token={user_token}&q=https://youtube.com/watch?v=dQw4w9WgXcQ\n"
             "```\n\n"
             "**2. Search single video:**\n"
             "```\n"
-            f"GET http://api.nubcoder.com/info?token={user_token}&q=python tutorial&max_results=1\n"
+            f"GET {api_url('info')}?token={user_token}&q=python tutorial&max_results=1\n"
             "```\n\n"
             "**3. Search multiple videos:**\n"
             "```\n"
-            f"GET http://api.nubcoder.com/info?token={user_token}&q=machine learning&max_results=5\n"
+            f"GET {api_url('info')}?token={user_token}&q=machine learning&max_results=5\n"
             "```\n\n"
             "**4. Using curl:**\n"
             "```bash\n"
-            f"curl \"http://api.nubcoder.com/info?token={user_token}&q=https://youtube.com/watch?v=VIDEO_ID\"\n"
+            f"curl \"{api_url('info')}?token={user_token}&q=https://youtube.com/watch?v=VIDEO_ID\"\n"
             "```",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔙 Back to Video Info", callback_data="api_info")]
@@ -474,7 +479,7 @@ async def handle_callbacks(client: Client, callback_query: CallbackQuery):
             "import requests\n"
             "import json\n\n"
             f"TOKEN = '{user_token}'\n"
-            "BASE = 'http://api.nubcoder.com'\n\n"
+            f"BASE = '{api_url()}'\n\n"
             "def get_video_info(url_or_query, max_results=1):\n"
             "    \"\"\"Get detailed video information\"\"\"\n"
             "    params = {\n"
@@ -531,7 +536,7 @@ async def handle_callbacks(client: Client, callback_query: CallbackQuery):
         await callback_query.answer()
         await callback_query.edit_message_text(
             "🔍 **Search Endpoint** (FREE)\n\n"
-            "**Endpoint:** `http://api.nubcoder.com/search`\n"
+            f"**Endpoint:** `{api_url('search')}`\n"
             "**Method:** `GET`\n"
             "**Auth:** No token required\n"
             "**Returns:** ❌ Metadata only (NO STREAM URLs)\n\n"
@@ -554,23 +559,23 @@ async def handle_callbacks(client: Client, callback_query: CallbackQuery):
             "🌐 **Search - GET Examples**\n\n"
             "**1. Basic search (1 result):**\n"
             "```\n"
-            "GET http://api.nubcoder.com/search?q=python tutorial&max_results=1\n"
+            f"GET {api_url('search')}?q=python tutorial&max_results=1\n"
             "```\n\n"
             "**2. Multiple results:**\n"
             "```\n"
-            "GET http://api.nubcoder.com/search?q=machine learning&max_results=10\n"
+            f"GET {api_url('search')}?q=machine learning&max_results=10\n"
             "```\n\n"
             "**3. URL encoded query:**\n"
             "```\n"
-            "GET http://api.nubcoder.com/search?q=how%20to%20code&max_results=5\n"
+            f"GET {api_url('search')}?q=how%20to%20code&max_results=5\n"
             "```\n\n"
             "**4. Using curl:**\n"
             "```bash\n"
-            "curl \"http://api.nubcoder.com/search?q=javascript tutorial&max_results=3\"\n"
+            f"curl \"{api_url('search')}?q=javascript tutorial&max_results=3\"\n"
             "```\n\n"
             "**5. Browser URL:**\n"
             "```\n"
-            "http://api.nubcoder.com/search?q=react js&max_results=20\n"
+            f"{api_url('search')}?q=react js&max_results=20\n"
             "```",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔙 Back to Search", callback_data="api_search")]
@@ -585,7 +590,7 @@ async def handle_callbacks(client: Client, callback_query: CallbackQuery):
             "```python\n"
             "import requests\n"
             "from typing import List, Dict, Optional\n\n"
-            "BASE = 'http://api.nubcoder.com'\n\n"
+            f"BASE = '{api_url()}'\n\n"
             "def search_videos(query: str, max_results: int = 5) -> Optional[List[Dict]]:\n"
             "    \"\"\"Search for YouTube videos (free endpoint)\"\"\"\n"
             "    params = {\n"
@@ -661,7 +666,7 @@ async def handle_callbacks(client: Client, callback_query: CallbackQuery):
         await callback_query.answer()
         await callback_query.edit_message_text(
             "📊 **Rate Limit Status Endpoint**\n\n"
-            "**Endpoint:** `http://api.nubcoder.com/rate-limit-status`\n"
+            f"**Endpoint:** `{api_url('rate-limit-status')}`\n"
             "**Method:** `GET`\n"
             "**Auth:** Token required\n\n"
             "**Parameters:**\n"
@@ -683,19 +688,19 @@ async def handle_callbacks(client: Client, callback_query: CallbackQuery):
             "🌐 **Rate Limit - GET Examples**\n\n"
             "**1. Check your quota:**\n"
             "```\n"
-            f"GET http://api.nubcoder.com/rate-limit-status?token={user_token}\n"
+            f"GET {api_url('rate-limit-status')}?token={user_token}\n"
             "```\n\n"
             "**2. Using curl:**\n"
             "```bash\n"
-            f"curl \"http://api.nubcoder.com/rate-limit-status?token={user_token}\"\n"
+            f"curl \"{api_url('rate-limit-status')}?token={user_token}\"\n"
             "```\n\n"
             "**3. With formatted output:**\n"
             "```bash\n"
-            f"curl -s \"http://api.nubcoder.com/rate-limit-status?token={user_token}\" | jq .\n"
+            f"curl -s \"{api_url('rate-limit-status')}?token={user_token}\" | jq .\n"
             "```\n\n"
             "**4. Browser URL:**\n"
             "```\n"
-            f"http://api.nubcoder.com/rate-limit-status?token={user_token}\n"
+            f"{api_url('rate-limit-status')}?token={user_token}\n"
             "```\n\n"
             "**Example Response:**\n"
             "```json\n"
@@ -722,7 +727,7 @@ async def handle_callbacks(client: Client, callback_query: CallbackQuery):
             "```python\n"
             "import requests\n\n"
             f"TOKEN = '{user_token}'\n"
-            "BASE = 'http://api.nubcoder.com'\n\n"
+            f"BASE = '{api_url()}'\n\n"
             "# Search (free)\n"
             "r = requests.get(f'{BASE}/search', \n"
             "    params={'q': 'python tutorial', 'max_results': 5})\n"
@@ -742,7 +747,7 @@ async def handle_callbacks(client: Client, callback_query: CallbackQuery):
         await callback_query.answer()
         await callback_query.edit_message_text(
             "❤️ **Health Check Endpoint**\n\n"
-            "**Endpoint:** `http://api.nubcoder.com/health`\n"
+            f"**Endpoint:** `{api_url('health')}`\n"
             "**Method:** `GET`\n"
             "**Auth:** No token required\n"
             "**Rate Limit:** None\n\n"
@@ -762,23 +767,23 @@ async def handle_callbacks(client: Client, callback_query: CallbackQuery):
             "🌐 **GET Health Check Examples**\n\n"
             "**1. Simple health check:**\n"
             "```\n"
-            "GET http://api.nubcoder.com/health\n"
+            f"GET {api_url('health')}\n"
             "```\n\n"
             "**2. Using curl:**\n"
             "```bash\n"
-            "curl http://api.nubcoder.com/health\n"
+            f"curl {api_url('health')}\n"
             "```\n\n"
             "**3. With timing information:**\n"
             "```bash\n"
-            "curl -w \"Response time: %{time_total}s\\n\" http://api.nubcoder.com/health\n"
+            f"curl -w \"Response time: %{{time_total}}s\\n\" {api_url('health')}\n"
             "```\n\n"
             "**4. Test connectivity:**\n"
             "```bash\n"
-            "curl -f -s http://api.nubcoder.com/health && echo \"API is healthy\" || echo \"API is down\"\n"
+            f"curl -f -s {api_url('health')} && echo \"API is healthy\" || echo \"API is down\"\n"
             "```\n\n"
             "**5. Browser URL:**\n"
             "```\n"
-            "http://api.nubcoder.com/health\n"
+            f"{api_url('health')}\n"
             "```\n\n"
             "**Example Response:**\n"
             "```json\n"
@@ -800,7 +805,7 @@ async def handle_callbacks(client: Client, callback_query: CallbackQuery):
             "```python\n"
             "import requests\n\n"
             f"TOKEN = '{user_token}'\n"
-            "BASE = 'http://api.nubcoder.com'\n\n"
+            f"BASE = '{api_url()}'\n\n"
             "# Search (free)\n"
             "r = requests.get(f'{BASE}/search', \n"
             "    params={'q': 'python tutorial', 'max_results': 5})\n"

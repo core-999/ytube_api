@@ -24,11 +24,14 @@ def load_dotenv(dotenv_path=".env"):
 load_dotenv()
 
 # ── Telegram Bot ───────────────────────────────────────────────
-API_ID = 2040
-API_HASH = "b18441a1ff607e10a989891a5462e627"
+API_ID = int(os.environ.get("API_ID", 2040))
+API_HASH = os.environ.get("API_HASH", "b18441a1ff607e10a989891a5462e627")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 GROUP = os.environ.get("TG_GROUP", "nub_coder_s")
 CHANNEL = os.environ.get("TG_CHANNEL", "nub_coders")
+
+# ── API Base URL ───────────────────────────────────────────────
+BASE_URL = os.environ.get("BASE_URL", "http://api.nubcoders.com").rstrip("/")
 
 admin_ids_str = os.environ.get("ADMIN_IDS", "")
 ADMIN_IDS = [int(x) for x in admin_ids_str.split() if x.isdigit()]

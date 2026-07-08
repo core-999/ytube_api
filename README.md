@@ -66,6 +66,12 @@ REDIS_PORT=6379
 # API Rate Limits
 DAILY_LIMIT=1000
 ADMIN_LIMIT=10000
+
+# Deployment Host
+API_HOST=api.nubcoders.com
+
+# Public API Base URL
+BASE_URL=http://api.nubcoders.com
 ```
 
 ### 3. Run the Services
@@ -129,6 +135,8 @@ All secrets and configurations can be customized via environment variables:
 | `REDIS_PORT` | Port of the Redis server | `15440` |
 | `REDIS_USERNAME`| Username for Redis authentication | `default` |
 | `REDIS_PASSWORD`| Password for Redis authentication | `None` |
+| `API_HOST` | Traefik host used by Docker Compose | `api.nubcoders.com` |
+| `BASE_URL` | Public base URL used in bot/docs | `http://api.nubcoders.com` |
 | `DAILY_LIMIT` | Default daily requests limit for free tier users | `1000` |
 | `ADMIN_LIMIT` | Default daily requests limit for administrators | `10000` |
 

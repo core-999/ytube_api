@@ -52,8 +52,8 @@ Create a `.env` file in the root directory and configure your credentials:
 
 ```ini
 # Telegram Bot API Credentials
-API_ID=21856699
-API_HASH=73f10cf0979637857170f03d4c86f251
+API_ID=
+API_HASH=
 BOT_TOKEN=your_bot_token
 
 # Space-separated list of Telegram user IDs with administrative rights

@@ -41,6 +41,28 @@ def generate_token() -> str:
     return ''.join(random.choices(string.ascii_letters + string.digits, k=10))
 
 
+def mask_token(token: str | None) -> str:
+    if not token or token == "YOUR_TOKEN":
+        return token or "YOUR_TOKEN"
+    if len(token) <= 4:
+        return "*" * len(token)
+    return token[:4] + "*" * (len(token) - 4)
+
+
+def is_group_chat(chat_or_event) -> bool:
+    try:
+        from pyrogram.enums import ChatType
+        chat = getattr(chat_or_event, "chat", None)
+        if not chat and hasattr(chat_or_event, "message"):
+            chat = getattr(chat_or_event.message, "chat", None)
+        if not chat:
+            return False
+        return chat.type != ChatType.PRIVATE
+    except Exception:
+        return False
+
+
+
 def is_admin(user_id: int) -> bool:
     return int(user_id) in ADMIN_IDS
 
@@ -50,6 +72,14 @@ def is_admin(user_id: int) -> bool:
 async def get_user_token(user_id) -> str | None:
     redis = await get_async_redis()
     return await redis.get(f"user_token:{user_id}")
+
+
+async def get_user_token_display(user_id, is_grp: bool, default: str = "") -> str:
+    token = await get_user_token(user_id)
+    if not token:
+        return default
+    return mask_token(token) if is_grp else token
+
 
 
 async def set_user_token(user_id, token) -> None:

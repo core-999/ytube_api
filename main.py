@@ -941,6 +941,9 @@ def start_services():
 if __name__ == "__main__":
     try:
         import asyncio
+        from utils.cookies import bootstrap as bootstrap_cookies, start_refresh
+        bootstrap_cookies()
+        start_refresh()
         threading.Thread(target=start_services, daemon=True).start()
         try:
             telegram_app.start()

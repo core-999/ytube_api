@@ -6,6 +6,8 @@ import time
 import logging
 from urllib.parse import urlparse, parse_qs
 
+from utils.cookies import cookie_args
+
 __all__ = ["get_stream", "get_video_stream"]
 
 logger = logging.getLogger("yt_dlp_api.Stream")
@@ -109,13 +111,8 @@ async def _run_yt_dlp(url: str, format_selector: str, cookies: str | None):
         url,
     ]
 
-    # Use cookies file if provided, otherwise try Firefox cookies
-    if cookies and os.path.exists(cookies):
-        cmd.insert(1, "--cookies")
-        cmd.insert(2, cookies)
-    else:
-        cmd.insert(1, "--cookies-from-browser")
-        cmd.insert(2, "firefox")
+    # Use cookies file if present, otherwise fall back to browser cookies
+    cmd[1:1] = cookie_args(cookies)
 
     logger.info(f"[YT-DLP] Running: {' '.join(cmd)}")
     try:

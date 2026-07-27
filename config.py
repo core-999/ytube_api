@@ -42,6 +42,18 @@ REDIS_PORT = int(os.environ.get("REDIS_PORT", 15440))
 REDIS_USERNAME = os.environ.get("REDIS_USERNAME", "default")
 REDIS_PASSWORD = os.environ.get("REDIS_PASSWORD")
 
+# ── Cookies ────────────────────────────────────────────────────
+# Path to the Netscape cookies file yt-dlp reads. Bootstrapped once at
+# startup from the browser profile (see utils/cookies.py).
+COOKIES_FILE = os.environ.get("COOKIES_FILE", "cookies.txt")
+COOKIES_BROWSER = os.environ.get("COOKIES_BROWSER", "firefox")
+# URL hit once at startup to export browser cookies into COOKIES_FILE.
+COOKIES_BOOTSTRAP_URL = os.environ.get(
+    "COOKIES_BOOTSTRAP_URL", "https://www.youtube.com/watch?v=BaW_jenozKc"
+)
+# Re-export cookies from the browser every N hours (0 disables).
+COOKIES_REFRESH_HOURS = float(os.environ.get("COOKIES_REFRESH_HOURS", 6))
+
 # ── Rate Limits ────────────────────────────────────────────────
 DAILY_LIMIT = int(os.environ.get("DAILY_LIMIT", 1000))
 ADMIN_LIMIT = int(os.environ.get("ADMIN_LIMIT", 10000))

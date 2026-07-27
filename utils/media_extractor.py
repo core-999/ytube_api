@@ -1,7 +1,8 @@
 import asyncio
-import os
 import logging
 import time
+
+from utils.cookies import cookie_args
 
 logger = logging.getLogger("yt_dlp_api.Video_Stream")
 
@@ -18,12 +19,7 @@ async def _extract_video(url: str, cookies: str | None = None):
         url,
     ]
 
-    if cookies and os.path.exists(cookies):
-        cmd.insert(1, "--cookies")
-        cmd.insert(2, cookies)
-    else:
-        cmd.insert(1, "--cookies-from-browser")
-        cmd.insert(2, "firefox")
+    cmd[1:1] = cookie_args(cookies)
 
     logger.debug(f"[VIDEO_EXTRACT] Starting...")
     start = time.time()
@@ -72,12 +68,7 @@ async def _extract_audio(url: str, cookies: str | None = None):
         url,
     ]
 
-    if cookies and os.path.exists(cookies):
-        cmd.insert(1, "--cookies")
-        cmd.insert(2, cookies)
-    else:
-        cmd.insert(1, "--cookies-from-browser")
-        cmd.insert(2, "firefox")
+    cmd[1:1] = cookie_args(cookies)
 
     logger.debug(f"[AUDIO_EXTRACT] Starting...")
     start = time.time()

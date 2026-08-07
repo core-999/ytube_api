@@ -1,4 +1,4 @@
-# yt-dlp_api
+<img src="ytdlpapi-badge.svg" alt="ytdlpapi" width="200">
 
 ![CI](https://github.com/nub-coders/yt-dlp_api/actions/workflows/ci.yml/badge.svg)
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)

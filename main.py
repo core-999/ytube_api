@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Query, Request, HTTPException, Depends
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse, FileResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 import time
 import asyncio
@@ -84,6 +84,7 @@ app = FastAPI(
 FREE_PATHS = frozenset([
     "/", "/search", "/trending", "/suggest", "/health",
     "/rate-limit-status", "/docs", "/openapi.json", "/metrics",
+    "/favicon.ico", "/favicon.svg",
 ])
 
 _FREE_PREFIXES = (
@@ -431,6 +432,19 @@ async def _metrics_middleware(request: Request, call_next):
     path = getattr(route, "path", request.url.path)
     metrics.record(request.method, path, response.status_code, time.time() - start)
     return response
+
+
+_ASSET_DIR = _os.path.dirname(__file__)
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon_ico():
+    return FileResponse(_os.path.join(_ASSET_DIR, "favicon.ico"), media_type="image/x-icon")
+
+
+@app.get("/favicon.svg", include_in_schema=False)
+async def favicon_svg():
+    return FileResponse(_os.path.join(_ASSET_DIR, "ytdlpapi-icon.svg"), media_type="image/svg+xml")
 
 
 @app.get("/metrics")

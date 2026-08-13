@@ -86,6 +86,14 @@ async def fetch_results(query: str, limit: int = 1):
 async def GetVideoById(video_id: str):
     keys = get_available_keys()
     if not keys:
+        # Innertube first (~0.15s, no key needed); yt-dlp -j below is the fallback.
+        try:
+            from .innertube import metadata
+            info = await metadata(video_id)
+            if info:
+                return info
+        except Exception:
+            pass
         # Fallback to extracting using yt-dlp -j (no API key needed)
         try:
             cmd = [

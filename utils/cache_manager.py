@@ -1,4 +1,3 @@
-import asyncio
 import os
 import hashlib
 import json
@@ -6,8 +5,8 @@ import time
 import logging
 from urllib.parse import urlparse, parse_qs
 
-from utils.cookies import cookie_args
-from utils.subprocess_limit import subprocess_slot
+from utils.innertube import resolve as innertube_resolve
+from utils.ytdlp_runner import resolve_g
 
 __all__ = ["get_stream", "get_video_stream"]
 
@@ -102,40 +101,17 @@ def _write_cache(url: str, stream_url: str, prefix: str = ""):
 
 
 async def _run_yt_dlp(url: str, format_selector: str, cookies: str | None):
-    cmd = [
-        "yt-dlp",
-        "--js-runtimes", "node",
-        "--remote-components", "ejs:github",
-        "-f", format_selector,
-        "--no-playlist",
-        "-g",
-        url,
-    ]
+    """yt-dlp fallback — client/cookie policy lives in utils/ytdlp_runner.py."""
+    return await resolve_g(url, format_selector, cookies, tag="YT-DLP")
 
-    # Use cookies file if present, otherwise fall back to browser cookies
-    cmd[1:1] = cookie_args(cookies)
 
-    logger.info(f"[YT-DLP] Running: {' '.join(cmd)}")
-    try:
-        async with subprocess_slot:
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await asyncio.wait_for(
-                process.communicate(),
-                timeout=40,
-            )
-        if process.returncode == 0 and stdout:
-            return stdout.decode().strip().split("\n")[0]
-        else:
-            err = stderr.decode().strip() if stderr else "unknown error"
-            logger.error(f"[YT-DLP] Failed: {err}")
-            return None
-    except Exception as e:
-        logger.error(f"[YT-DLP] Exception: {e}")
-        return None
+async def _resolve(url: str, kind: str, format_selector: str, cookies: str | None):
+    """Innertube fast path first (~0.15 s, anonymous), yt-dlp -g as fallback."""
+    stream_url = await innertube_resolve(url, kind)
+    if stream_url:
+        logger.info(f"[INNERTUBE] ✅ {kind} {url[:80]}")
+        return stream_url
+    return await _run_yt_dlp(url, format_selector, cookies)
 
 
 async def get_stream(url: str, cookies: str | None = None) -> str | None:
@@ -163,8 +139,8 @@ async def get_stream(url: str, cookies: str | None = None) -> str | None:
                 pass
         return cached_url
 
-    # 3. Resolve using yt-dlp
-    stream_url = await _run_yt_dlp(url, "251/250/bestaudio[ext=m4a]/bestaudio", cookies)
+    # 3. Resolve — Innertube first, yt-dlp fallback
+    stream_url = await _resolve(url, "audio", "251/250/bestaudio[ext=m4a]/bestaudio", cookies)
     if stream_url:
         # 4. Write cache
         _write_cache(url, stream_url, prefix)
@@ -203,8 +179,8 @@ async def get_video_stream(url: str, cookies: str | None = None) -> str | None:
                 pass
         return cached_url
 
-    # 3. Resolve using yt-dlp
-    stream_url = await _run_yt_dlp(url, "22/18/best[ext=mp4]", cookies)
+    # 3. Resolve — Innertube first, yt-dlp fallback
+    stream_url = await _resolve(url, "muxed", "22/18/best[ext=mp4]", cookies)
     if stream_url:
         # 4. Write cache
         _write_cache(url, stream_url, prefix)

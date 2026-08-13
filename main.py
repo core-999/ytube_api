@@ -7,10 +7,9 @@ import logging
 import datetime
 import hashlib
 import base64
+import threading
 from typing import Optional
 import uvicorn
-import threading
-from pyrogram import Client, idle
 import inspect
 from fastapi.routing import APIRoute
 from fastapi.params import Depends as DependsParam
@@ -20,9 +19,7 @@ from fastapi.encoders import jsonable_encoder
 from starlette.routing import Match
 from starlette.responses import Response
 
-# Telegram Bot Configuration
-from config import API_ID, API_HASH, BOT_TOKEN, GROUP, CHANNEL, DAILY_LIMIT, ADMIN_LIMIT
-from bot_commands import setup_bot_commands
+from config import DAILY_LIMIT, ADMIN_LIMIT
 from utils.url_validation import validate_youtube_target
 
 # Import shared tools
@@ -31,20 +28,6 @@ from tools import (
     set_user_token, revoke_user_token, get_user_by_token,
     get_user_request_count, set_user_request_count, increment_user_requests,
     increment_failed_requests
-)
-
-# Initialize Pyrogram client with plugins
-telegram_app = Client(
-    "ytdlp_bot",
-    api_id=API_ID,
-    api_hash=API_HASH,
-    bot_token=BOT_TOKEN, in_memory=True,
-    plugins=dict(root="plugins"),
-    device_model="Desktop",
-    system_version="Windows 10",
-    app_version="3.4.3 x64",
-    lang_code="en",
-    lang_pack="tdesktop"
 )
 
 import os as _os
@@ -72,6 +55,12 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logging.error(f"[STARTUP] Cookie bootstrap failed: {e}")
     yield
+    # Release the Innertube fast-path connection pool on shutdown.
+    try:
+        from utils.innertube import close_client as close_innertube
+        await close_innertube()
+    except Exception:
+        pass
 
 
 app = FastAPI(
@@ -89,7 +78,6 @@ FREE_PATHS = frozenset([
 
 _FREE_PREFIXES = (
     "/stream/resolver/",
-    "/video-stream/resolver/",
 )
 
 # ─────────────────────────── Redirect Stream Storage ───────────────────────────
@@ -99,7 +87,7 @@ _FREE_PREFIXES = (
 import json as _json
 from tools import get_async_redis
 
-_STREAM_TTL = 120
+_STREAM_TTL = 14400  # 4 hours (matches YouTube stream URL lifetime)
 
 
 async def _job_get(stream_id: str) -> Optional[dict]:
@@ -139,7 +127,7 @@ def _start_background_extraction(stream_id: str, url: str, mode: str):
 
 
 def _resolve_mode(mode: str) -> str:
-    return "video" if mode == "video" else "audio"
+    return "video" if str(mode).lower() in ("video", "stream", "muxed") else "audio"
 
 
 async def _ensure_stream_job(url: str, mode: str) -> str:
@@ -157,16 +145,59 @@ async def _ensure_stream_job(url: str, mode: str) -> str:
     )
     if created:
         _start_background_extraction(stream_id, url, resolved_mode)
+    else:
+        # A long _STREAM_TTL means a job whose extraction failed would otherwise stay
+        # dead for hours (the old 120s TTL hid this by expiring). Retry it — repeat
+        # resolves are cheap, cache_manager serves them from cache.
+        job = await _job_get(stream_id)
+        if job is not None and job["extracted_url"] is None:
+            _start_background_extraction(stream_id, url, resolved_mode)
 
     return stream_id
 
 
-async def _make_temp_redirect(request: Request, url: str, mode: str) -> str:
+async def _await_extracted(stream_id: str) -> Optional[dict]:
+    """Job with extracted_url populated (polling up to 45s), or None if it's gone.
+
+    Shared by the resolver (redirects to the URL) and the proxy (streams its bytes).
+    """
+    job = await _job_get(stream_id)
+    if job is None:
+        return None
+    if job["extracted_url"] is None:
+        for _ in range(45):  # 45s: background extraction usually lands in 1-2s
+            await asyncio.sleep(1)
+            job = await _job_get(stream_id)
+            if job is None or job["extracted_url"] is not None:
+                break
+    return job
+
+
+def _make_https_url(url_obj) -> str:
+    if hasattr(url_obj, "replace") and not isinstance(url_obj, str):
+        return str(url_obj.replace(scheme="https"))
+    s = str(url_obj)
+    if s.startswith("http://"):
+        return "https://" + s[7:]
+    return s
+
+
+async def _make_temp_redirect(request: Request, url: str, mode: str = "video") -> str:
     stream_id = await _ensure_stream_job(url, mode)
-    return str(
-        request.url_for("stream_resolver", stream_id=stream_id)
-        .replace(scheme="https")
-    )
+    return _make_https_url(request.url_for("stream_resolver", stream_id=stream_id))
+
+
+async def _resolve_stream_url_for_info(request: Request, url: str, redirect: bool = True) -> str:
+    """Return direct raw stream URL (or 307 redirect URL if redirect=True)."""
+    if redirect:
+        return await _make_temp_redirect(request, url, "video")
+
+    stream_id = await _ensure_stream_job(url, "video")
+    job = await _await_extracted(stream_id)
+    if not job or not job.get("extracted_url"):
+        return await _make_temp_redirect(request, url, "video")
+
+    return job["extracted_url"]
 
 
 def _token_from_request(request: Request) -> Optional[str]:
@@ -465,10 +496,8 @@ async def read_root():
             "/search": "Search songs via scrape or YouTube Data API (FREE)",
             "/trending": "Get trending music (FREE)",
             "/suggest": "Get song suggestions for a query (FREE)",
-            "/stream": "Get audio or video stream URL (token required)",
+            "/stream": "Get stream URL (token required)",
             "/stream/redirect": "Get instant redirect URL for pytgcall (token required)",
-                "/video-stream": "Get separate video + audio URLs (token required)",
-            "/video-stream/redirect": "Get instant redirect URL for video/audio (token required)",
             "/info": "Search + stream URL in one call (token required)",
             "/playlist": "Get all songs from a YouTube playlist (token required)",
             "/health": "Health check (FREE)",
@@ -476,7 +505,7 @@ async def read_root():
         },
         "free_endpoints": ["/search", "/trending", "/suggest", "/health"],
         "auth": "Get your token from the Telegram bot @ytdlp_nub_bot using /start",
-        "redirect_note": "Use /stream/redirect and /video-stream/redirect with pytgcall for instant response + background extraction"
+        "redirect_note": "Use /stream/redirect with pytgcall for instant response + background extraction"
     }
 
 
@@ -522,77 +551,21 @@ async def search_songs(
         )
 
 
-@app.get("/video-stream/redirect")
-async def video_stream_redirect(
-    request: Request,
-    q: str = Query(..., description="YouTube video URL"),
-    type: str = Query("audio", description="Which stream: 'video' (mp4) or 'audio' (m4a)"),
-    token: str = Query(..., description="Your API token"),
-    user_id: int = Depends(require_token)
-):
-    """Get instant redirect URL for video or audio stream (pytgcall friendly!)."""
-    stream_id = await _ensure_stream_job(q, "video" if type == "video" else "audio")
-
-    # Return 307 Temporary Redirect to resolver
-    return RedirectResponse(
-        url=str(
-            request.url_for("video_stream_resolver", stream_id=stream_id)
-            .include_query_params(token=token)
-            .replace(scheme="https")
-        ),
-        status_code=307,
-    )
-
-
-@app.get("/video-stream/resolver/{stream_id}")
-async def video_stream_resolver(stream_id: str):
-    """Resolver endpoint for video stream redirect."""
-    job = await _job_get(stream_id)
-    if job is None:
-        return JSONResponse(
-            content={"error": "Stream not found", "hint": "Use /video-stream/redirect to get a valid URL"},
-            status_code=404
-        )
-
-    # If not extracted yet, poll Redis up to 45s for the background job to finish
-    if job["extracted_url"] is None:
-        logging.info(f"[VIDEO_STREAM_RESOLVER] Waiting for extraction... {stream_id}")
-        for i in range(45):  # 45 second timeout
-            await asyncio.sleep(1)
-            job = await _job_get(stream_id)
-            if job is None or job["extracted_url"] is not None:
-                break
-
-    if job and job["extracted_url"]:
-        logging.info(f"[VIDEO_STREAM_RESOLVER] Redirecting to stream URL {stream_id}")
-        return RedirectResponse(
-            url=job["extracted_url"],
-            status_code=307
-        )
-    else:
-        return JSONResponse(
-            content={"error": "Failed to extract stream URL", "url": job["url"] if job else None},
-            status_code=500
-        )
-
-
 @app.get("/stream/redirect")
 async def stream_redirect(
     request: Request,
     q: str = Query(..., description="YouTube video URL"),
-    mode: str = Query("audio", description="Mode: 'audio' or 'video'"),
     token: str = Query(..., description="Your API token"),
     user_id: int = Depends(require_token)
 ):
     """Get instant redirect URL for streaming (pytgcall friendly!)."""
-    stream_id = await _ensure_stream_job(q, mode)
+    stream_id = await _ensure_stream_job(q, "video")
 
     # Return 307 Temporary Redirect to resolver
     return RedirectResponse(
-        url=str(
+        url=_make_https_url(
             request.url_for("stream_resolver", stream_id=stream_id)
             .include_query_params(token=token)
-            .replace(scheme="https")
         ),
         status_code=307,
     )
@@ -601,50 +574,31 @@ async def stream_redirect(
 @app.get("/stream/resolver/{stream_id}")
 async def stream_resolver(stream_id: str):
     """Resolver endpoint for redirect streaming."""
-    job = await _job_get(stream_id)
+    job = await _await_extracted(stream_id)
     if job is None:
         return JSONResponse(
             content={"error": "Stream not found", "hint": "Use /stream/redirect to get a valid URL"},
             status_code=404
         )
 
-    # If not extracted yet, poll Redis up to 45s for the background job to finish
-    if job["extracted_url"] is None:
-        logging.info(f"[STREAM_RESOLVER] Waiting for extraction... {stream_id}")
-        for i in range(45):  # 45 second timeout
-            await asyncio.sleep(1)
-            job = await _job_get(stream_id)
-            if job is None or job["extracted_url"] is not None:
-                break
-
-    if job and job["extracted_url"]:
+    if job["extracted_url"]:
         logging.info(f"[STREAM_RESOLVER] Redirecting to stream URL {stream_id}")
-        return RedirectResponse(
-            url=job["extracted_url"],
-            status_code=307
-        )
-    else:
-        return JSONResponse(
-            content={"error": "Failed to extract stream URL", "url": job["url"] if job else None},
-            status_code=500
-        )
+        return RedirectResponse(url=job["extracted_url"], status_code=307)
+    return JSONResponse(
+        content={"error": "Failed to extract stream URL", "url": job["url"]},
+        status_code=500
+    )
 
 
 @app.get("/stream")
 async def get_stream_url(
     request: Request,
     q: str = Query(..., description="YouTube video URL"),
-    mode: str = Query("audio", description="Mode: 'audio' or 'video'"),
     redirect: bool = Query(False, description="Return a temporary redirect URL instead of the final stream URL"),
     token: Optional[str] = Query(None, description="API token (deprecated — prefer 'Authorization: Bearer <token>')"),
     user_id: int = Depends(require_token)
 ):
-    """Get stream URL for a YouTube video.
-
-    Modes:
-    - `audio`: Best audio stream (m4a)
-    - `video`: Best combined video+audio (mp4, 360p)
-    """
+    """Get stream URL for a YouTube video."""
     validate_youtube_target(q)  # SSRF guard
     start_time = time.time()
 
@@ -653,25 +607,19 @@ async def get_stream_url(
             elapsed = round(time.time() - start_time, 2)
             return JSONResponse(content={
                 "url": q,
-                "mode": mode,
-                "redirect_url": await _make_temp_redirect(request, q, mode),
+                "redirect_url": await _make_temp_redirect(request, q, "video"),
                 "stream_url": None,
                 "time_taken": f"{elapsed} sec"
             })
 
-        if mode == "video":
-            from utils.cache_manager import get_video_stream
-            stream_url = await get_video_stream(q)
-        else:
-            from utils.cache_manager import get_stream
-            stream_url = await get_stream(q)
+        from utils.cache_manager import get_video_stream
+        stream_url = await get_video_stream(q)
 
         elapsed = round(time.time() - start_time, 2)
 
         if stream_url:
             return JSONResponse(content={
                 "url": q,
-                "mode": mode,
                 "stream_url": stream_url,
                 "time_taken": f"{elapsed} sec"
             })
@@ -689,63 +637,11 @@ async def get_stream_url(
         )
 
 
-@app.get("/video-stream")
-async def video_stream_urls(
-    request: Request,
-    q: str = Query(..., description="YouTube video URL"),
-    redirect: bool = Query(False, description="Return a temporary redirect URL instead of separate stream URLs"),
-    token: Optional[str] = Query(None, description="API token (deprecated — prefer 'Authorization: Bearer <token>')"),
-    user_id: int = Depends(require_token)
-):
-    """Get separate best-quality video and audio URLs.
-
-    Returns two URLs: bestvideo (mp4) + bestaudio (m4a).
-    Use these with ffmpeg or a player that supports dual-source playback.
-    """
-    validate_youtube_target(q)  # SSRF guard
-    start_time = time.time()
-
-    try:
-        if redirect:
-            elapsed = round(time.time() - start_time, 2)
-            return JSONResponse(content={
-                "url": q,
-                "redirect_url": await _make_temp_redirect(request, q, "video"),
-                "stream_url": None,
-                "time_taken": f"{elapsed} sec"
-            })
-
-        from utils.media_extractor import resolve_stream_urls
-        video_url, audio_url = await resolve_stream_urls(q)
-        elapsed = round(time.time() - start_time, 2)
-
-        if video_url and audio_url:
-            return JSONResponse(content={
-                "url": q,
-                "video_url": video_url,
-                "audio_url": audio_url,
-                "time_taken": f"{elapsed} sec"
-            })
-        else:
-            return JSONResponse(
-                content={"error": "Failed to extract video+audio URLs", "time_taken": f"{elapsed} sec"},
-                status_code=500
-            )
-
-    except Exception as e:
-        elapsed = round(time.time() - start_time, 2)
-        return JSONResponse(
-            content={"error": str(e), "time_taken": f"{elapsed} sec"},
-            status_code=400
-        )
-
-
 @app.get("/info")
 async def video_info(
     request: Request,
     q: str = Query(..., description="YouTube video URL or search query"),
     max_results: int = Query(1, description="Max results for search queries", ge=1, le=10),
-    mode: str = Query("audio", description="Mode: 'audio' for audio-only, 'video' for video stream"),
     redirect: bool = Query(True, description="Return a temporary redirect URL instead of waiting for the final stream"),
     token: Optional[str] = Query(None, description="API token (deprecated — prefer 'Authorization: Bearer <token>')"),
     user_id: int = Depends(require_token)
@@ -782,25 +678,7 @@ async def video_info(
             video_id = extract_video_id_from_url(q)
             metadata_task = asyncio.create_task(GetVideoById(video_id)) if video_id else None
 
-            if redirect:
-                temp_redirect_url = await _make_temp_redirect(request, q, mode)
-                metadata_result = await metadata_task if metadata_task else None
-                info = metadata_result if isinstance(metadata_result, dict) else {}
-
-                elapsed = round(time.time() - start_time, 2)
-                return JSONResponse(content={
-                    "query_type": "url",
-                    "title": info.get("title"),
-                    "duration": info.get("duration"),
-                    "youtube_link": q,
-                    "channel_name": info.get("channel_name") or info.get("channel") or info.get("artist_name"),
-                    "views": info.get("views"),
-                    "video_id": info.get("video_id"),
-                    "stream_url": temp_redirect_url,
-                    "thumbnail": info.get("thumbnail"),
-                    "time_taken": f"{elapsed} sec"
-                })
-
+            stream_url = await _resolve_stream_url_for_info(request, q, redirect)
             metadata_result = await metadata_task if metadata_task else None
             info = metadata_result if isinstance(metadata_result, dict) else {}
 
@@ -813,7 +691,7 @@ async def video_info(
                 "channel_name": info.get("channel_name") or info.get("channel") or info.get("artist_name"),
                 "views": info.get("views"),
                 "video_id": info.get("video_id"),
-                "stream_url": await _make_temp_redirect(request, q, mode),
+                "stream_url": stream_url,
                 "thumbnail": info.get("thumbnail"),
                 "time_taken": f"{elapsed} sec"
             })
@@ -827,6 +705,7 @@ async def video_info(
                 result = search_data["main_results"][0]
                 video_url = result.get("url", "")
 
+                stream_url = await _resolve_stream_url_for_info(request, video_url, redirect)
                 elapsed = round(time.time() - start_time, 2)
                 return JSONResponse(content={
                     "query_type": "search",
@@ -837,7 +716,7 @@ async def video_info(
                     "channel_name": result.get("channel"),
                     "views": result.get("views"),
                     "video_id": result.get("video_id"),
-                    "stream_url": await _make_temp_redirect(request, video_url, mode),
+                    "stream_url": stream_url,
                     "thumbnail": result.get("thumbnail"),
                     "time_taken": f"{elapsed} sec"
                 })
@@ -996,23 +875,18 @@ def start_services():
 
 
 if __name__ == "__main__":
-    # All-in-one: FastAPI (with cookie bootstrap via lifespan) + Telegram bot in one
-    # process. For horizontal scaling run the API and bot separately instead —
-    # `uvicorn main:app --workers N` (or N replicas) + `python3 bot.py`.
     try:
-        threading.Thread(target=start_services, daemon=True).start()
-        try:
-            telegram_app.start()
-            setup_bot_commands(telegram_app)
-            me = telegram_app.me
-            print(f"🤖 Bot Started: @{me.username} ({me.first_name}) [ID: {me.id}]")
-            idle()
-            telegram_app.stop()
-        except Exception as e:
-            print(f"Bot failed: {e}, API still running...")
-            import time as _time
-            while True:
-                _time.sleep(3600)
+        from config import BOT_TOKEN
+        if BOT_TOKEN:
+            try:
+                from bot import run_bot
+                threading.Thread(target=start_services, daemon=True).start()
+                run_bot()
+            except Exception as e:
+                print(f"Bot failed: {e}, running FastAPI API standalone...")
+                start_services()
+        else:
+            start_services()
     except KeyboardInterrupt:
         print("Services stopped by user")
     except Exception as e:

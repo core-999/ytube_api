@@ -2,20 +2,29 @@ from pyrogram import Client, idle
 from config import API_ID, API_HASH, BOT_TOKEN, GROUP, CHANNEL
 from bot_commands import setup_bot_commands
 
-telegram_app = Client(
-    "ytdlp_bot",
-    api_id=API_ID,
-    api_hash=API_HASH,
-    bot_token=BOT_TOKEN, in_memory=True,
-    plugins=dict(root="plugins"),
-    device_model="Desktop",
-    system_version="Windows 10",
-    app_version="3.4.3 x64",
-    lang_code="en",
-    lang_pack="tdesktop"
-)
+def get_bot_app():
+    if not BOT_TOKEN:
+        return None
+    return Client(
+        "ytdlp_bot",
+        api_id=API_ID,
+        api_hash=API_HASH,
+        bot_token=BOT_TOKEN,
+        in_memory=True,
+        ipv6=False,
+        plugins=dict(root="plugins"),
+        device_model="Desktop",
+        system_version="Windows 10",
+        app_version="3.4.3 x64",
+        lang_code="en",
+        lang_pack="tdesktop"
+    )
 
 def run_bot():
+    if not BOT_TOKEN:
+        print("⚠️ BOT_TOKEN is not set. Telegram bot will not start.")
+        return
+    telegram_app = get_bot_app()
     telegram_app.start()
     setup_bot_commands(telegram_app)
     me = telegram_app.me

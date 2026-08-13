@@ -31,8 +31,10 @@ async def get_async_redis():
             decode_responses=True,
             username=REDIS_USERNAME,
             password=REDIS_PASSWORD,
-            socket_connect_timeout=5,
-            socket_timeout=5,
+            socket_connect_timeout=10,
+            socket_timeout=10,
+            health_check_interval=30,
+            retry_on_timeout=True,
             max_connections=20,
         )
     return _async_redis

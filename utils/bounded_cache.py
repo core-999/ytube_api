@@ -48,6 +48,20 @@ class BoundedCache:
         while len(self._data) > self.maxsize:
             self._data.popitem(last=False)  # evict least-recently-used
 
+    def pop(self, key, default=_MISSING):
+        item = self._data.pop(key, _MISSING)
+        if item is _MISSING:
+            if default is _MISSING:
+                raise KeyError(key)
+            return default
+        value, exp = item
+        if exp is not None and exp < time.time():
+            return default if default is not _MISSING else None
+        return value
+
+    def __delitem__(self, key):
+        del self._data[key]
+
     def setdefault(self, key, default):
         v = self._live(key)
         if v is _MISSING:

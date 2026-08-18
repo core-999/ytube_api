@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Query, Request, HTTPException, Depends
-from fastapi.responses import JSONResponse, RedirectResponse, FileResponse
+from fastapi.responses import JSONResponse, RedirectResponse, FileResponse, StreamingResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 import time
 import asyncio
@@ -9,6 +9,7 @@ import hashlib
 import base64
 import threading
 from typing import Optional
+import httpx
 import uvicorn
 import inspect
 from fastapi.routing import APIRoute
@@ -78,6 +79,7 @@ FREE_PATHS = frozenset([
 
 _FREE_PREFIXES = (
     "/stream/resolver/",
+    "/stream/proxy/",
 )
 
 # ─────────────────────────── Redirect Stream Storage ───────────────────────────
@@ -182,22 +184,89 @@ def _make_https_url(url_obj) -> str:
     return s
 
 
+def _make_temp_proxy(request: Request, stream_id: str) -> str:
+    return _make_https_url(request.url_for("stream_proxy_by_id", stream_id=stream_id))
+
+
 async def _make_temp_redirect(request: Request, url: str, mode: str = "video") -> str:
     stream_id = await _ensure_stream_job(url, mode)
-    return _make_https_url(request.url_for("stream_resolver", stream_id=stream_id))
+    return _make_temp_proxy(request, stream_id)
 
 
 async def _resolve_stream_url_for_info(request: Request, url: str, redirect: bool = True) -> str:
-    """Return direct raw stream URL (or 307 redirect URL if redirect=True)."""
-    if redirect:
-        return await _make_temp_redirect(request, url, "video")
-
+    """Return direct proxied stream URL."""
     stream_id = await _ensure_stream_job(url, "video")
-    job = await _await_extracted(stream_id)
-    if not job or not job.get("extracted_url"):
-        return await _make_temp_redirect(request, url, "video")
+    return _make_temp_proxy(request, stream_id)
 
-    return job["extracted_url"]
+
+async def _proxy_stream_response(target_url: str, request: Request) -> Response:
+    """Stream media chunks from target_url back to client with Range request support."""
+    req_headers = {}
+    range_header = request.headers.get("range")
+    if range_header:
+        req_headers["range"] = range_header
+
+    user_agent = request.headers.get("user-agent") or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    req_headers["user-agent"] = user_agent
+
+    client = httpx.AsyncClient(
+        timeout=httpx.Timeout(connect=15.0, read=None, write=30.0, pool=30.0),
+        follow_redirects=True,
+    )
+
+    try:
+        upstream_req = client.build_request("GET", target_url, headers=req_headers)
+        upstream_resp = await client.send(upstream_req, stream=True)
+    except Exception as e:
+        await client.aclose()
+        logging.error(f"[STREAM_PROXY] Upstream connection error: {e}")
+        return JSONResponse(
+            status_code=502,
+            content={"error": "Bad Gateway", "message": f"Failed to connect to stream source: {str(e)}"}
+        )
+
+    if upstream_resp.status_code in (403, 404, 410):
+        status = upstream_resp.status_code
+        await upstream_resp.aclose()
+        await client.aclose()
+        return JSONResponse(
+            status_code=status,
+            content={"error": f"Upstream returned HTTP {status}"}
+        )
+
+    # Headers to forward back to client
+    resp_headers = {}
+    for h in ("content-type", "content-length", "content-range", "accept-ranges", "content-disposition", "cache-control"):
+        val = upstream_resp.headers.get(h)
+        if val is not None:
+            resp_headers[h] = val
+
+    if "accept-ranges" not in resp_headers:
+        resp_headers["accept-ranges"] = "bytes"
+
+    async def stream_generator():
+        try:
+            async for chunk in upstream_resp.aiter_bytes(chunk_size=128 * 1024):
+                yield chunk
+        except (asyncio.CancelledError, GeneratorExit):
+            pass
+        except Exception as err:
+            logging.debug(f"[STREAM_PROXY] Stream disconnected: {err}")
+        finally:
+            try:
+                await upstream_resp.aclose()
+            except Exception:
+                pass
+            try:
+                await client.aclose()
+            except Exception:
+                pass
+
+    return StreamingResponse(
+        stream_generator(),
+        status_code=upstream_resp.status_code,
+        headers=resp_headers,
+    )
 
 
 def _token_from_request(request: Request) -> Optional[str]:
@@ -555,39 +624,47 @@ async def search_songs(
 async def stream_redirect(
     request: Request,
     q: str = Query(..., description="YouTube video URL"),
+    mode: str = Query("video", description="Stream mode: 'video' or 'audio'"),
     token: str = Query(..., description="Your API token"),
     user_id: int = Depends(require_token)
 ):
     """Get instant redirect URL for streaming (pytgcall friendly!)."""
-    stream_id = await _ensure_stream_job(q, "video")
+    resolved_mode = _resolve_mode(mode)
+    stream_id = await _ensure_stream_job(q, resolved_mode)
 
-    # Return 307 Temporary Redirect to resolver
+    # Return 307 Temporary Redirect to resolver/proxy
     return RedirectResponse(
-        url=_make_https_url(
-            request.url_for("stream_resolver", stream_id=stream_id)
-            .include_query_params(token=token)
-        ),
+        url=_make_temp_proxy(request, stream_id),
         status_code=307,
     )
 
 
 @app.get("/stream/resolver/{stream_id}")
-async def stream_resolver(stream_id: str):
-    """Resolver endpoint for redirect streaming."""
+@app.get("/stream/proxy/{stream_id}")
+async def stream_resolver(request: Request, stream_id: str):
+    """Resolver endpoint for proxied streaming."""
     job = await _await_extracted(stream_id)
     if job is None:
         return JSONResponse(
-            content={"error": "Stream not found", "hint": "Use /stream/redirect to get a valid URL"},
+            content={"error": "Stream not found", "hint": "Use /stream or /stream/redirect to get a valid URL"},
             status_code=404
         )
 
-    if job["extracted_url"]:
-        logging.info(f"[STREAM_RESOLVER] Redirecting to stream URL {stream_id}")
-        return RedirectResponse(url=job["extracted_url"], status_code=307)
-    return JSONResponse(
-        content={"error": "Failed to extract stream URL", "url": job["url"]},
-        status_code=500
-    )
+    if not job.get("extracted_url"):
+        return JSONResponse(
+            content={"error": "Failed to extract stream URL", "url": job.get("url")},
+            status_code=500
+        )
+
+    resp = await _proxy_stream_response(job["extracted_url"], request)
+    if resp.status_code == 403 and job.get("url") and job.get("mode"):
+        logging.info(f"[STREAM_PROXY] Got 403 from upstream for {stream_id}, refreshing stream URL...")
+        _start_background_extraction(stream_id, job["url"], job["mode"])
+        refreshed_job = await _await_extracted(stream_id)
+        if refreshed_job and refreshed_job.get("extracted_url") and refreshed_job["extracted_url"] != job["extracted_url"]:
+            resp = await _proxy_stream_response(refreshed_job["extracted_url"], request)
+
+    return resp
 
 
 @app.get("/stream")
@@ -595,39 +672,33 @@ async def get_stream_url(
     request: Request,
     q: str = Query(..., description="YouTube video URL"),
     redirect: bool = Query(False, description="Return a temporary redirect URL instead of the final stream URL"),
+    mode: str = Query("video", description="Stream mode: 'video' or 'audio'"),
     token: Optional[str] = Query(None, description="API token (deprecated — prefer 'Authorization: Bearer <token>')"),
     user_id: int = Depends(require_token)
 ):
-    """Get stream URL for a YouTube video."""
+    """Get proxified stream URL for a YouTube video."""
     validate_youtube_target(q)  # SSRF guard
     start_time = time.time()
 
     try:
+        resolved_mode = _resolve_mode(mode)
+        stream_id = await _ensure_stream_job(q, resolved_mode)
+        stream_url = _make_temp_proxy(request, stream_id)
+        elapsed = round(time.time() - start_time, 2)
+
         if redirect:
-            elapsed = round(time.time() - start_time, 2)
             return JSONResponse(content={
                 "url": q,
-                "redirect_url": await _make_temp_redirect(request, q, "video"),
+                "redirect_url": stream_url,
                 "stream_url": None,
                 "time_taken": f"{elapsed} sec"
             })
 
-        from utils.cache_manager import get_video_stream
-        stream_url = await get_video_stream(q)
-
-        elapsed = round(time.time() - start_time, 2)
-
-        if stream_url:
-            return JSONResponse(content={
-                "url": q,
-                "stream_url": stream_url,
-                "time_taken": f"{elapsed} sec"
-            })
-        else:
-            return JSONResponse(
-                content={"error": "Failed to extract stream URL", "time_taken": f"{elapsed} sec"},
-                status_code=500
-            )
+        return JSONResponse(content={
+            "url": q,
+            "stream_url": stream_url,
+            "time_taken": f"{elapsed} sec"
+        })
 
     except Exception as e:
         elapsed = round(time.time() - start_time, 2)
@@ -876,8 +947,8 @@ def start_services():
 
 if __name__ == "__main__":
     try:
-        from config import BOT_TOKEN
-        if BOT_TOKEN:
+        from config import BOT_TOKEN, START_BOT
+        if BOT_TOKEN and START_BOT:
             try:
                 from bot import run_bot
                 threading.Thread(target=start_services, daemon=True).start()
@@ -886,6 +957,8 @@ if __name__ == "__main__":
                 print(f"Bot failed: {e}, running FastAPI API standalone...")
                 start_services()
         else:
+            if not START_BOT:
+                print("ℹ️ Telegram bot disabled via configuration (START_BOT=false).")
             start_services()
     except KeyboardInterrupt:
         print("Services stopped by user")

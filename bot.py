@@ -21,10 +21,16 @@ def get_bot_app():
     )
 
 def run_bot():
+    from config import START_BOT
+    if not START_BOT:
+        print("ℹ️ Telegram bot is disabled via START_BOT / ENABLE_BOT configuration.")
+        return
     if not BOT_TOKEN:
         print("⚠️ BOT_TOKEN is not set. Telegram bot will not start.")
         return
     telegram_app = get_bot_app()
+    if not telegram_app:
+        return
     telegram_app.start()
     setup_bot_commands(telegram_app)
     me = telegram_app.me

@@ -220,17 +220,17 @@ Get parsed metadata and direct streaming links for a video.
   - `redirect` (boolean, optional): Return a temporary redirect URL or wait for extraction. Default `True`.
 
 #### `GET /stream`
-Resolve and return direct audio/video stream URLs.
+Resolve and return stream URL (proxied directly through the server with Range request support).
 - **Parameters**:
   - `q` (string, required): YouTube video URL or ID.
-  - `mode` (string, optional): `'audio'` (default) or `'video'`.
+  - `mode` (string, optional): `'audio'` or `'video'` (default).
   - `redirect` (boolean, optional): Return a temporary redirect URL. Default `False`.
 
 #### `GET /stream/redirect`
-Get an instant redirect URL for audio streaming (ideal for `pytgcall` integrations).
+Get an instant redirect URL for streaming (ideal for `pytgcall` and media players).
 - **Parameters**:
   - `q` (string, required): YouTube video URL or ID.
-  - `mode` (string, optional): `'audio'` (default) or `'video'`.
+  - `mode` (string, optional): `'audio'` or `'video'` (default).
 
 #### `GET /video-stream`
 Resolve and return separate high-quality video and audio URLs.

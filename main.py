@@ -185,7 +185,11 @@ def _make_https_url(url_obj) -> str:
 
 
 def _make_temp_proxy(request: Request, stream_id: str) -> str:
-    return _make_https_url(request.url_for("stream_proxy_by_id", stream_id=stream_id))
+    from config import BASE_URL
+    try:
+        return _make_https_url(request.url_for("stream_resolver", stream_id=stream_id))
+    except Exception:
+        return f"{BASE_URL}/stream/resolver/{stream_id}"
 
 
 async def _make_temp_redirect(request: Request, url: str, mode: str = "video") -> str:
@@ -639,8 +643,8 @@ async def stream_redirect(
     )
 
 
-@app.get("/stream/resolver/{stream_id}")
-@app.get("/stream/proxy/{stream_id}")
+@app.get("/stream/resolver/{stream_id}", name="stream_resolver")
+@app.get("/stream/proxy/{stream_id}", name="stream_proxy_by_id")
 async def stream_resolver(request: Request, stream_id: str):
     """Resolver endpoint for proxied streaming."""
     job = await _await_extracted(stream_id)

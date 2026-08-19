@@ -74,6 +74,8 @@ async def resolve_g(url: str, selector: str, cookies: str | None = None,
 
     cargs = cookie_args(cookies)
     if not cargs:
+        # No cookie jar in this environment (e.g. container with no browser
+        # profile) — anonymous was the only possible attempt.
         return None
     # ponytail: trailing /best so an age-gated video still yields its muxed stream
     # instead of failing the selector when adaptive formats are withheld.

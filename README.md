@@ -146,15 +146,17 @@ All secrets and configurations can be customized via environment variables:
 | `BASE_URL` | Public base URL used in bot/docs | `https://api.nubcoders.com` |
 | `DAILY_LIMIT` | Default daily requests limit for free tier users | `1000` |
 | `ADMIN_LIMIT` | Default daily requests limit for administrators | `10000` |
-| `COOKIES_FILE` | Path to a Netscape-format YouTube cookies file | `cookies.txt` |
-| `COOKIES_BROWSER` | Browser profile to export cookies from (local dev only) | `firefox` |
+| `COOKIES_FILE` | Path to a Netscape-format YouTube cookies file (optional) | `cookies.txt` |
+| `COOKIES_BROWSER` | Browser profile to export cookies from; empty disables the probe | `firefox` |
 | `COOKIES_REFRESH_HOURS` | Re-export cookies from the browser every N hours (`0` disables) | `6` |
 | `YTDLP_MAX_PROCS` | Max concurrent yt-dlp/ffmpeg subprocesses (backpressure cap) | `2 × CPU count` |
 | `WEB_CONCURRENCY` | Uvicorn worker processes per API container | `1` |
 
 ### Cookies & Security
 
-yt-dlp uses a YouTube cookie jar to avoid bot-detection on some videos. In the Docker setup, cookies are exported automatically at startup from a **Firefox profile mounted into the container** (`${HOME}/.mozilla/firefox` → `/root/.mozilla/firefox`, see `docker-compose.yml`) and re-exported every `COOKIES_REFRESH_HOURS`.
+Cookies are **optional**. Extraction runs anonymously by default and only retries with a cookie jar for age-gated / members-only videos, so the API and bot work fine on hosts with no browser profile (Railway, plain containers, CI). If no cookie source is available, startup logs a single warning and the service stays in anonymous mode.
+
+In the Docker Compose setup, cookies are exported at startup from a **Firefox profile mounted into the container** (`${HOME}/.mozilla/firefox` → `/root/.mozilla/firefox`, see `docker-compose.yml`) and re-exported every `COOKIES_REFRESH_HOURS`. Set `COOKIES_BROWSER=` (empty) to skip the browser probe entirely.
 
 **A logged-in browser profile is a bearer credential for that Google/YouTube account** — anyone who can read the profile or the exported `cookies.txt` can act as that account. Treat it accordingly:
 

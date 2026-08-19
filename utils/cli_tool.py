@@ -37,15 +37,11 @@ async def run_search(query: str, fetch_stream: bool = False, cookies: str | None
     print("URL       :", item.get("url"))
 
     if fetch_stream:
-        if not cookies:
-            print("\nCookies path not provided.")
-            print("Provide --cookies <path> to extract stream URL.")
-            return
-
-        if not os.path.exists(cookies):
-            print("\nCookies path not found.")
-            print("Provide valid --cookies <path> to extract stream URL.")
-            return
+        # Cookies are optional: extraction runs anonymously and only falls back to
+        # a cookie jar for age-gated/members-only videos.
+        if cookies and not os.path.exists(cookies):
+            print("\nCookies path not found; continuing without cookies.")
+            cookies = None
 
         print("\nExtracting audio stream...")
         stream_url = await get_stream(item.get("url"), cookies)
@@ -68,13 +64,13 @@ def cli():
     parser.add_argument(
         "--stream",
         action="store_true",
-        help="Extract direct audio stream URL (requires cookies)",
+        help="Extract direct audio stream URL (cookies optional)",
     )
 
     parser.add_argument(
         "--cookies",
         type=str,
-        help="Path to cookies.txt file",
+        help="Optional path to cookies.txt (only needed for age-gated videos)",
     )
 
     parser.add_argument(

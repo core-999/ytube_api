@@ -46,15 +46,26 @@ async def lifespan(app: FastAPI):
     # ponytail: with --workers>1 in ONE container the workers race on cookies.txt;
     # recommended scaling is WEB_CONCURRENCY=1 + multiple replicas (each writes its
     # own container-local file). Bump to a file lock only if you must run N>1 in one box.
+    #
+    # Cookies are optional (extraction runs anonymously by default), so this is a
+    # best-effort background step: the browser probe shells out to yt-dlp and can take
+    # up to 60s per browser, which must never delay startup or /health.
     if not _os.getenv("TESTING"):
         try:
             from utils.logging_config import setup_json_logging
             setup_json_logging()
-            from utils.cookies import bootstrap as bootstrap_cookies, start_refresh
-            bootstrap_cookies()
-            start_refresh()
+
+            def _cookie_bootstrap():
+                try:
+                    from utils.cookies import bootstrap as bootstrap_cookies, start_refresh
+                    bootstrap_cookies()
+                    start_refresh()
+                except Exception as e:
+                    logging.warning(f"[STARTUP] Cookie bootstrap skipped: {e}")
+
+            threading.Thread(target=_cookie_bootstrap, daemon=True).start()
         except Exception as e:
-            logging.error(f"[STARTUP] Cookie bootstrap failed: {e}")
+            logging.warning(f"[STARTUP] Logging/cookie init skipped: {e}")
     yield
     # Release the Innertube fast-path connection pool on shutdown.
     try:

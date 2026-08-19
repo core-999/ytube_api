@@ -11,9 +11,12 @@ services:
     # Traefik load-balances all replicas via the labels below.
     networks:
       - web
+    environment:
+      API_HOST: ${API_HOST:-}
+      BASE_URL: ${BASE_URL:-}
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.ytmusic-api.rule=Host(`${API_HOST:-api.nubcoders.com}`)"
+      - "traefik.http.routers.ytmusic-api.rule=Host(`${API_HOST:-}`)"
       - "traefik.http.routers.ytmusic-api.entrypoints=websecure"
       - "traefik.http.routers.ytmusic-api.tls.certresolver=letsencrypt"
       - "traefik.http.services.ytmusic-api.loadbalancer.server.port=8000"

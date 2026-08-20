@@ -76,7 +76,7 @@ def cli():
     parser.add_argument(
         "--version",
         action="version",
-        version=f"yt-dlp_api {__version__}",
+        version=f"ytube_api {__version__}",
     )
 
     parser.add_argument(
@@ -88,7 +88,7 @@ def cli():
     args = parser.parse_args()
 
     if args.info:
-        print("Package  : yt-dlp_api")
+        print("Package  : ytube_api")
         print("Version  :", __version__)
         print("Author   :", __author__)
         return

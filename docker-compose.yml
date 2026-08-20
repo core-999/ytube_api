@@ -1,11 +1,11 @@
 services:
-  ytmusic-api:
+  ytube-api:
     build:
       context: .
       dockerfile: Dockerfile
-    image: ytmusic-api:latest
+    image: ytube-api:latest
     restart: always
-    # Scale the API horizontally: `docker compose up -d --scale ytmusic-api=N`.
+    # Scale the API horizontally: `docker compose up -d --scale ytube-api=N`.
     # (No container_name — Compose needs unique names to run >1 replica.)
     # Job state lives in Redis, so resolver calls work across replicas.
     # Traefik load-balances all replicas via the labels below.
@@ -16,10 +16,10 @@ services:
       BASE_URL: ${BASE_URL:-}
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.ytmusic-api.rule=Host(`${API_HOST:-}`)"
-      - "traefik.http.routers.ytmusic-api.entrypoints=websecure"
-      - "traefik.http.routers.ytmusic-api.tls.certresolver=letsencrypt"
-      - "traefik.http.services.ytmusic-api.loadbalancer.server.port=8000"
+      - "traefik.http.routers.ytube-api.rule=Host(`${API_HOST:-}`)"
+      - "traefik.http.routers.ytube-api.entrypoints=websecure"
+      - "traefik.http.routers.ytube-api.tls.certresolver=letsencrypt"
+      - "traefik.http.services.ytube-api.loadbalancer.server.port=8000"
     volumes:
       # Firefox profile mounted so yt-dlp can export YouTube cookies via
       # --cookies-from-browser. Container runs as root, so /root/.mozilla is the
@@ -31,19 +31,19 @@ services:
       timeout: 10s
       retries: 3
 
-  ytmusic-bot:
+  ytube-bot:
     build:
       context: .
       dockerfile: Dockerfile
-    image: ytmusic-api:latest
-    container_name: ytmusic-bot
+    image: ytube-api:latest
+    container_name: ytube-bot
     restart: always
     # The Telegram bot is a single long-poll consumer — never scale this past 1.
     command: ["python3", "bot.py"]
     networks:
       - web
     depends_on:
-      - ytmusic-api
+      - ytube-api
 
 networks:
   web:

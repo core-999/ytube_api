@@ -76,7 +76,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="yt-dlp_api API",
+    title="ytube_api API",
     description="API for yt-dlp-based search, streaming, and playlist extraction with Telegram bot integration",
     lifespan=lifespan,
 )
@@ -559,7 +559,7 @@ async def favicon_ico():
 
 @app.get("/favicon.svg", include_in_schema=False)
 async def favicon_svg():
-    return FileResponse(_os.path.join(_ASSET_DIR, "ytdlpapi-icon.svg"), media_type="image/svg+xml")
+    return FileResponse(_os.path.join(_ASSET_DIR, "ytubeapi-icon.svg"), media_type="image/svg+xml")
 
 
 @app.get("/metrics")
@@ -574,7 +574,7 @@ async def metrics_endpoint():
 async def read_root():
     """API welcome page"""
     return {
-        "name": "yt-dlp_api API",
+        "name": "ytube_api API",
         "version": "2026.3.12",
         "endpoints": {
             "/search": "Search songs via scrape or YouTube Data API (FREE)",

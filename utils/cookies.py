@@ -24,7 +24,7 @@ from config import (
     COOKIES_REFRESH_HOURS,
 )
 
-logger = logging.getLogger("yt_dlp_api.cookies")
+logger = logging.getLogger("ytube_api.cookies")
 
 # Tri-state: None = never probed, True = export worked, False = no readable browser
 # profile in this environment. Once we know it's False we stop passing

@@ -1,6 +1,6 @@
-<img src="ytdlpapi-badge.svg" alt="ytdlpapi" width="200">
+<img src="ytubeapi-badge.svg" alt="ytubeapi" width="200">
 
-![CI](https://github.com/nub-coders/yt-dlp_api/actions/workflows/ci.yml/badge.svg)
+![CI](https://github.com/nub-coders/ytube_api/actions/workflows/ci.yml/badge.svg)
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Python](https://img.shields.io/badge/python-3.13-blue.svg)
 
@@ -88,8 +88,8 @@ docker-compose up --build -d
 ```
 
 This will spin up two containers:
-- **`ytmusic-api`** — FastAPI Web API on port `8000` (routed via Traefik). Stateless: job state lives in Redis, so you can scale it with `docker compose up -d --scale ytmusic-api=4`.
-- **`ytmusic-bot`** — Telegram bot runner. Single long-poll consumer — never scale past 1.
+- **`ytube-api`** — FastAPI Web API on port `8000` (routed via Traefik). Stateless: job state lives in Redis, so you can scale it with `docker compose up -d --scale ytube-api=4`.
+- **`ytube-bot`** — Telegram bot runner. Single long-poll consumer — never scale past 1.
 
 Redis is connected to as an external service using the credentials in `.env`.
 
@@ -305,7 +305,7 @@ asyncio.run(main())
 ## Project Structure
 
 ```text
-yt-dlp_api/
+ytube_api/
 │
 ├── config.py              # Centralised environment variable loader
 ├── main.py                # FastAPI endpoints and middleware / bot runner

@@ -17,7 +17,7 @@ import logging
 import httpx
 from fastapi.responses import StreamingResponse
 
-logger = logging.getLogger("yt_dlp_api.proxy")
+logger = logging.getLogger("ytube_api.proxy")
 
 # Generous read timeout: googlevideo throttles long transfers, and a slow chunk is
 # normal rather than a failure. Connect stays short so a dead CDN node fails fast.

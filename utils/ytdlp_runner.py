@@ -22,7 +22,7 @@ import time
 from utils.cookies import cookie_args
 from utils.subprocess_limit import subprocess_slot
 
-logger = logging.getLogger("yt_dlp_api.ytdlp")
+logger = logging.getLogger("ytube_api.ytdlp")
 
 # The one client that accepts cookies without tripping YouTube's session check.
 _COOKIE_CLIENTS = ["--extractor-args", "youtube:player_client=mweb,web_safari,tv"]

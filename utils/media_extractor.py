@@ -5,7 +5,7 @@ import time
 from utils.innertube import resolve_both
 from utils.ytdlp_runner import resolve_g
 
-logger = logging.getLogger("yt_dlp_api.Video_Stream")
+logger = logging.getLogger("ytube_api.Video_Stream")
 
 # The selectors the yt-dlp fallback uses. utils/innertube.py mirrors these itag
 # for itag, so both paths return the same codecs.

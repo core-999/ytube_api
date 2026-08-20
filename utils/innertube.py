@@ -20,7 +20,7 @@ import re
 import httpx
 import orjson
 
-logger = logging.getLogger("yt_dlp_api.innertube")
+logger = logging.getLogger("ytube_api.innertube")
 
 # Public, non-secret Innertube key (shipped in youtube.com's own JS).
 _KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"

@@ -10,7 +10,7 @@ from utils.ytdlp_runner import resolve_g
 
 __all__ = ["get_stream", "get_video_stream"]
 
-logger = logging.getLogger("yt_dlp_api.Stream")
+logger = logging.getLogger("ytube_api.Stream")
 
 _CACHE_DIR = os.path.join(os.path.dirname(__file__), ".cache")
 os.makedirs(_CACHE_DIR, exist_ok=True)

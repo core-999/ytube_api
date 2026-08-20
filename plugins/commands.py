@@ -387,6 +387,10 @@ async def handle_callbacks(client: Client, callback_query: CallbackQuery):
             "        return 0, 0, 0, False, str(e)\n\n"
             "```",
             reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("📄 Part 2: Client Class", callback_data="impl_python_part2"),
+                    InlineKeyboardButton("💡 Examples", callback_data="impl_python_examples")
+                ],
                 [InlineKeyboardButton("🔙 Back to Implementation", callback_data="api_implementation")]
             ])
         )
@@ -853,6 +857,23 @@ async def handle_callbacks(client: Client, callback_query: CallbackQuery):
         await callback_query.edit_message_text(
             "🐍 **Python Implementation - Part 2**\n\n"
             "```python\n"
+            "import requests\n"
+            "from typing import Dict, List\n\n"
+            "class YtubeAPIClient:\n"
+            "    \"\"\"Reusable client for the ytube_api endpoints.\"\"\"\n\n"
+            f"    BASE_URL = '{api_url()}'\n\n"
+            "    def __init__(self, token: str):\n"
+            "        self.token = token\n"
+            "        self.session = requests.Session()\n\n"
+            "    def _make_request(self, endpoint: str, params: Dict) -> Dict:\n"
+            "        \"\"\"Send a GET request to an endpoint and return the JSON body.\"\"\"\n"
+            "        response = self.session.get(\n"
+            "            f'{self.BASE_URL}{endpoint}',\n"
+            "            params=params,\n"
+            "            timeout=30,\n"
+            "        )\n"
+            "        response.raise_for_status()\n"
+            "        return response.json()\n\n"
             "    def search_videos(self, query: str, max_results: int = 5) -> List[Dict]:\n"
             "        \"\"\"Search for videos (free endpoint)\"\"\"\n"
             "        params = {\n"
@@ -908,7 +929,7 @@ async def handle_callbacks(client: Client, callback_query: CallbackQuery):
         await callback_query.edit_message_text(
             "🐍 **Python Usage Examples**\n\n"
             "```python\n"
-            "# Initialize the client\n"
+            "# Initialize the client (class defined in Part 2)\n"
             f"client = YtubeAPIClient('{user_token}')\n\n"
             "# Example 1: Search for videos\n"
             "try:\n"

@@ -10,7 +10,7 @@ httpx[http2]==0.28.1
 orjson==3.11.7
 fastapi==0.129.2
 uvicorn[standard]==0.41.0
-kurigram==2.2.23
+kurigram==2.2.25
 redis[asyncio]==7.2.0
 tgcrypto==1.2.5
 yt-dlp[default]

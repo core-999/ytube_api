@@ -71,9 +71,43 @@ def is_group_chat(chat_or_event) -> bool:
         return False
 
 
-
 def is_admin(user_id: int) -> bool:
     return int(user_id) in ADMIN_IDS
+
+
+async def send_smart_rich_message(
+    client,
+    chat_id,
+    rich_message,
+    receiver_user_id=None,
+    reply_markup=None,
+    fallback_rich_message=None
+):
+    """Safely deliver rich message, automatically handling Telegram's BOT_NOT_ADMIN error
+    for ephemeral group messages by gracefully falling back to standard masked delivery."""
+    if receiver_user_id is not None:
+        try:
+            return await client.send_rich_message(
+                chat_id=chat_id,
+                receiver_user_id=receiver_user_id,
+                rich_message=rich_message,
+                reply_markup=reply_markup
+            )
+        except Exception as e:
+            err_str = str(e).lower()
+            if any(k in err_str for k in ["bot_not_admin", "ephemeral", "400", "bad request"]):
+                target_msg = fallback_rich_message or rich_message
+                return await client.send_rich_message(
+                    chat_id=chat_id,
+                    rich_message=target_msg,
+                    reply_markup=reply_markup
+                )
+            raise
+    return await client.send_rich_message(
+        chat_id=chat_id,
+        rich_message=rich_message,
+        reply_markup=reply_markup
+    )
 
 
 # ── Token helpers (all async, use async Redis) ─────────────────
@@ -215,4 +249,3 @@ async def get_recent_errors(count: int = 20) -> list:
         except Exception:
             continue
     return entries
-

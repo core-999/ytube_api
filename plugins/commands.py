@@ -1,16 +1,18 @@
-from pyrogram import filters
-from pyrogram.client import Client
-from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+import html
 import asyncio
 import time
-
+from pyrogram import filters, enums
+from pyrogram.client import Client
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, InputRichMessage
+from pyrogram.enums import ButtonStyle
 
 # Import from tools module
 from tools import (
     redis_client, generate_token, is_admin, get_user_token, 
     set_user_token, revoke_user_token, get_user_request_count,
     set_user_request_count, increment_user_requests,
-    mask_token, is_group_chat, get_user_token_display
+    mask_token, is_group_chat, get_user_token_display,
+    send_smart_rich_message
 )
 from config import BASE_URL
 
@@ -32,95 +34,224 @@ def get_readable_time(seconds: int) -> str:
 def api_url(path: str = "") -> str:
     return f"{BASE_URL}/{path.lstrip('/')}" if path else BASE_URL
 
+
+def build_main_menu_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🔧 API Implementation", callback_data="api_implementation", style=ButtonStyle.PRIMARY),
+            InlineKeyboardButton("📊 Usage Status", callback_data="usage_status", style=ButtonStyle.PRIMARY)
+        ],
+        [
+            InlineKeyboardButton("🔄 Revoke Token", callback_data="revoke_token", style=ButtonStyle.DANGER),
+            InlineKeyboardButton("❓ Help", callback_data="help", style=ButtonStyle.DEFAULT)
+        ],
+        [
+            InlineKeyboardButton("📖 API Docs", callback_data="api_docs", style=ButtonStyle.PRIMARY)
+        ]
+    ])
+
+
 @Client.on_message(filters.command("start"))
 async def start_command(client: Client, message: Message):
     if not message.from_user:
         return
 
     user_id = message.from_user.id
-    username = message.from_user.username or message.from_user.first_name
+    raw_username = message.from_user.username or message.from_user.first_name or "User"
+    username = html.escape(raw_username)
     is_grp = is_group_chat(message)
-    group_note = "\n\n🔒 *Token is masked in group chats for security. DM the bot to view your full token.*" if is_grp else ""
+    receiver_uid = user_id if is_grp else None
 
     # Check if user already has a token
     existing_token = await get_user_token(user_id)
 
     keyboard = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("🔧 API Implementation", callback_data="api_implementation"),
-            InlineKeyboardButton("📊 Usage Status", callback_data="usage_status")
+            InlineKeyboardButton("🔧 API Implementation", callback_data="api_implementation", style=ButtonStyle.PRIMARY),
+            InlineKeyboardButton("📊 Usage Status", callback_data="usage_status", style=ButtonStyle.PRIMARY)
         ],
         [
-            InlineKeyboardButton("🔄 Revoke Token", callback_data="revoke_token"),
-            InlineKeyboardButton("❓ Help", callback_data="help")
+            InlineKeyboardButton("🔄 Revoke Token", callback_data="revoke_token", style=ButtonStyle.DANGER),
+            InlineKeyboardButton("❓ Help", callback_data="help", style=ButtonStyle.DEFAULT)
         ]
     ])
 
     if existing_token:
-        disp_token = mask_token(existing_token) if is_grp else existing_token
-        await message.reply_text(
-            f"🎉 **Welcome back, {username}!**\n\n"
-            f"✅ Your API is ready to use!\n"
-            f"🔗 Token: `{disp_token}`\n\n"
-            f"🌐 **API Base URL:**\n"
-            f"`{api_url()}/`\n\n"
-            f"📝 **Usage:**\n"
-            f"Add your token as a query parameter:\n"
-            f"`{api_url('info')}?token={disp_token}&q=VIDEO_URL`\n\n"
-            f"📈 **Daily Limit:** 1000 requests\n"
-            f"🔍 **Search:** Always free!{group_note}",
+        disp_token_private = existing_token
+        disp_token_masked = mask_token(existing_token)
+
+        content_html_ephemeral = f"""<h1>Welcome back, {username}!</h1>
+<blockquote>Your YT-DLP API integration is active and ready for requests.</blockquote>
+
+<table border="1">
+  <tr><th>Setting</th><th>Value</th></tr>
+  <tr><td><b>API Token</b></td><td><code>{disp_token_private}</code></td></tr>
+  <tr><td><b>Base URL</b></td><td><code>{api_url()}</code></td></tr>
+  <tr><td><b>Daily Limit</b></td><td>1,000 requests</td></tr>
+  <tr><td><b>Search API</b></td><td>Free &amp; Unlimited</td></tr>
+</table>
+
+<details>
+  <summary>Quick Start Example</summary>
+  <p>Add your token as a query parameter or Authorization header:</p>
+  <code>{api_url('info')}?token={disp_token_private}&amp;q=VIDEO_URL</code>
+</details>""" + (
+            "<blockquote>🔒 <b>Ephemeral Message:</b> This message and your API token are only visible to you in this group.</blockquote>"
+            if is_grp else ""
+        )
+
+        content_html_fallback = f"""<h1>Welcome back, {username}!</h1>
+<blockquote>Your YT-DLP API integration is active and ready for requests.</blockquote>
+
+<table border="1">
+  <tr><th>Setting</th><th>Value</th></tr>
+  <tr><td><b>API Token</b></td><td><code>{disp_token_masked}</code></td></tr>
+  <tr><td><b>Base URL</b></td><td><code>{api_url()}</code></td></tr>
+  <tr><td><b>Daily Limit</b></td><td>1,000 requests</td></tr>
+  <tr><td><b>Search API</b></td><td>Free &amp; Unlimited</td></tr>
+</table>
+
+<details>
+  <summary>Quick Start Example</summary>
+  <p>Add your token as a query parameter or Authorization header:</p>
+  <code>{api_url('info')}?token={disp_token_masked}&amp;q=VIDEO_URL</code>
+</details>
+<details>
+  <summary>🔒 Group Chat Privacy Notice</summary>
+  <blockquote>Token is masked for group security. DM the bot /start or promote bot to admin for private ephemeral responses.</blockquote>
+</details>"""
+
+        await send_smart_rich_message(
+            client=client,
+            chat_id=message.chat.id,
+            receiver_user_id=receiver_uid,
+            rich_message=InputRichMessage(html=content_html_ephemeral),
+            fallback_rich_message=InputRichMessage(html=content_html_fallback),
             reply_markup=keyboard
         )
     else:
         # Generate new token
         new_token = generate_token()
         await set_user_token(user_id, new_token)
-        disp_token = mask_token(new_token) if is_grp else new_token
+        disp_token_private = new_token
+        disp_token_masked = mask_token(new_token)
 
-        await message.reply_text(
-            f"🎉 **Welcome to YT-DLP API, {username}!**\n\n"
-            f"🔑 Your API token: `{disp_token}`\n\n"
-            f"🌐 **API Base URL:**\n"
-            f"`{api_url()}/`\n\n"
-            f"📝 **How to use:**\n"
-            f"Add your token as a query parameter:\n"
-            f"`{api_url('info')}?token={disp_token}&q=VIDEO_URL`\n\n"
-            f"📈 **Daily Limit:** 1000 requests\n"
-            f"🔍 **Search:** Always free!\n\n"
-            f"🚀 **Get started:** Use the buttons below!{group_note}",
+        content_html_ephemeral = f"""<h1>Welcome to YT-DLP API, {username}!</h1>
+<blockquote>Your personal API key has been provisioned below.</blockquote>
+
+<table border="1">
+  <tr><th>Configuration</th><th>Detail</th></tr>
+  <tr><td><b>API Token</b></td><td><code>{disp_token_private}</code></td></tr>
+  <tr><td><b>Base URL</b></td><td><code>{api_url()}</code></td></tr>
+  <tr><td><b>Daily Quota</b></td><td>1,000 requests/day</td></tr>
+  <tr><td><b>Search Mode</b></td><td>Free &amp; Unlimited</td></tr>
+</table>
+
+<details>
+  <summary>How to Use</summary>
+  <p>Include your token in requests:</p>
+  <code>{api_url('info')}?token={disp_token_private}&amp;q=VIDEO_URL</code>
+</details>""" + (
+            "<blockquote>🔒 <b>Ephemeral Message:</b> This message and your API token are only visible to you in this group.</blockquote>"
+            if is_grp else ""
+        )
+
+        content_html_fallback = f"""<h1>Welcome to YT-DLP API, {username}!</h1>
+<blockquote>Your personal API key has been provisioned below.</blockquote>
+
+<table border="1">
+  <tr><th>Configuration</th><th>Detail</th></tr>
+  <tr><td><b>API Token</b></td><td><code>{disp_token_masked}</code></td></tr>
+  <tr><td><b>Base URL</b></td><td><code>{api_url()}</code></td></tr>
+  <tr><td><b>Daily Quota</b></td><td>1,000 requests/day</td></tr>
+  <tr><td><b>Search Mode</b></td><td>Free &amp; Unlimited</td></tr>
+</table>
+
+<details>
+  <summary>How to Use</summary>
+  <p>Include your token in requests:</p>
+  <code>{api_url('info')}?token={disp_token_masked}&amp;q=VIDEO_URL</code>
+</details>
+<details>
+  <summary>🔒 Group Chat Privacy Notice</summary>
+  <blockquote>Token is masked for group security. DM the bot /start or promote bot to admin for private ephemeral responses.</blockquote>
+</details>"""
+
+        await send_smart_rich_message(
+            client=client,
+            chat_id=message.chat.id,
+            receiver_user_id=receiver_uid,
+            rich_message=InputRichMessage(html=content_html_ephemeral),
+            fallback_rich_message=InputRichMessage(html=content_html_fallback),
             reply_markup=keyboard
         )
 
+
 @Client.on_message(filters.command("menu"))
 async def menu_command(client: Client, message: Message):
-    keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("🔧 API Implementation", callback_data="api_implementation"),
-            InlineKeyboardButton("📊 Usage Status", callback_data="usage_status")
-        ],
-        [
-            InlineKeyboardButton("🔄 Revoke Token", callback_data="revoke_token"),
-            InlineKeyboardButton("❓ Help", callback_data="help")
-        ],
-        [
-            InlineKeyboardButton("📖 API Docs", callback_data="api_docs")
-        ]
-    ])
+    is_grp = is_group_chat(message)
+    receiver_uid = message.from_user.id if (message.from_user and is_grp) else None
 
-    await message.reply_text(
-        "🤖 **YT-DLP API Bot Menu**\n\n"
-        "Choose an option below:",
-        reply_markup=keyboard
+    content_html = f"""<h1>YT-DLP API Bot Menu</h1>
+<blockquote>Choose an option below to manage your token, inspect usage metrics, or view endpoint documentation.</blockquote>
+
+<table border="1">
+  <tr><th>Feature</th><th>Description</th></tr>
+  <tr><td><b>Implementation</b></td><td>Code examples (cURL, Python, GET)</td></tr>
+  <tr><td><b>Usage Status</b></td><td>Live quota tracking &amp; reset timers</td></tr>
+  <tr><td><b>Documentation</b></td><td>Endpoint parameters &amp; responses</td></tr>
+</table>"""
+
+    content_html_ephemeral = content_html + ("<blockquote>🔒 <b>Ephemeral Message:</b> Only visible to you in this group.</blockquote>" if is_grp else "")
+
+    await send_smart_rich_message(
+        client=client,
+        chat_id=message.chat.id,
+        receiver_user_id=receiver_uid,
+        rich_message=InputRichMessage(html=content_html_ephemeral),
+        fallback_rich_message=InputRichMessage(html=content_html),
+        reply_markup=build_main_menu_keyboard()
     )
+
 
 @Client.on_message(filters.command("ping"))
 async def ping_command(client: Client, message: Message):
-    """Measure and display bot latency and uptime"""
+    """Measure and display bot latency and uptime using streaming draft and rich message."""
     start = time.time()
-    sent = await message.reply_text("🏓 Pong!")
+    chat_id = message.chat.id
+    draft_id = client.rnd_id()
+    is_grp = is_group_chat(message)
+    receiver_uid = message.from_user.id if (message.from_user and is_grp) else None
+
+    try:
+        await client.send_rich_message_draft(
+            chat_id=chat_id,
+            draft_id=draft_id,
+            rich_message=InputRichMessage(html="<b>🏓 Measuring round-trip latency...</b>")
+        )
+    except Exception:
+        pass
+
     elapsed = round((time.time() - start) * 1000, 2)
     uptime = get_readable_time(int(time.time() - BOT_START_TIME))
-    await sent.edit_text(f"🏓 **Pong!**\n\n⚡ **Latency:** `{elapsed} ms`\n⏱ **Uptime:** `{uptime}`")
+
+    content_html = f"""<h1>🏓 Pong!</h1>
+<blockquote>Bot engine and API interfaces are healthy.</blockquote>
+
+<table border="1">
+  <tr><th>Metric</th><th>Value</th></tr>
+  <tr><td><b>⚡ Latency</b></td><td><code>{elapsed} ms</code></td></tr>
+  <tr><td><b>⏱ Uptime</b></td><td><code>{uptime}</code></td></tr>
+  <tr><td><b>🌐 API Status</b></td><td><b>Online</b></td></tr>
+</table>"""
+
+    await send_smart_rich_message(
+        client=client,
+        chat_id=chat_id,
+        receiver_user_id=receiver_uid,
+        rich_message=InputRichMessage(html=content_html)
+    )
+
 
 @Client.on_callback_query()
 async def handle_callbacks(client: Client, callback_query: CallbackQuery):
@@ -133,32 +264,80 @@ async def handle_callbacks(client: Client, callback_query: CallbackQuery):
         if not token:
             await callback_query.answer("❌ No token found. Use /start to get one.", show_alert=True)
         else:
-            await callback_query.answer(f"🔑 Your API Token: {token}", show_alert=True)
+            if is_grp:
+                chat_id = callback_query.message.chat.id if callback_query.message else user_id
+                try:
+                    await client.send_rich_message(
+                        chat_id=chat_id,
+                        receiver_user_id=user_id,
+                        rich_message=InputRichMessage(html=f"""<h1>Your API Token</h1>
+<blockquote>🔒 <b>Ephemeral:</b> Only visible to you in this group.</blockquote>
+<table border="1">
+  <tr><th>Bearer Token</th></tr>
+  <tr><td><code>{token}</code></td></tr>
+</table>""")
+                    )
+                    await callback_query.answer("🔑 Token sent ephemerally!", show_alert=False)
+                except Exception:
+                    # Fallback when bot is not admin in group: send private popup alert
+                    await callback_query.answer(f"🔑 Your API Token: {token}", show_alert=True)
+            else:
+                await callback_query.answer(f"🔑 Your API Token: {token}", show_alert=True)
 
     elif data == "get_token":
         token = await get_user_token(user_id)
         if not token:
             token = generate_token()
             await set_user_token(user_id, token)
-        await callback_query.answer(f"🔑 Your API Token: {token}", show_alert=True)
+        if is_grp:
+            chat_id = callback_query.message.chat.id if callback_query.message else user_id
+            try:
+                await client.send_rich_message(
+                    chat_id=chat_id,
+                    receiver_user_id=user_id,
+                    rich_message=InputRichMessage(html=f"""<h1>Your API Token</h1>
+<blockquote>🔒 <b>Ephemeral:</b> Only visible to you in this group.</blockquote>
+<table border="1">
+  <tr><th>Bearer Token</th></tr>
+  <tr><td><code>{token}</code></td></tr>
+</table>""")
+                )
+                await callback_query.answer("🔑 Token generated ephemerally!", show_alert=False)
+            except Exception:
+                # Fallback when bot is not admin in group: send private popup alert
+                await callback_query.answer(f"🔑 Your API Token: {token}", show_alert=True)
+        else:
+            await callback_query.answer(f"🔑 Your API Token: {token}", show_alert=True)
 
     elif data == "api_implementation":
         token = await get_user_token(user_id)
         if token:
-            disp_token = mask_token(token) if is_grp else token
+            disp_token = token
             await callback_query.answer()
+            content_html = f"""<h1>API Implementation Guide</h1>
+<blockquote>Select an integration guide or reference below to get started.</blockquote>
+
+<table border="1">
+  <tr><th>Field</th><th>Value</th></tr>
+  <tr><td><b>Your Token</b></td><td><code>{disp_token}</code></td></tr>
+  <tr><td><b>Base URL</b></td><td><code>{api_url()}</code></td></tr>
+</table>
+
+<details>
+  <summary>Authentication Tips</summary>
+  <p>Tokens can be passed as query parameter (<code>?token=...</code>) or Bearer header (<code>Authorization: Bearer ...</code>).</p>
+</details>"""
+
             await callback_query.edit_message_text(
-                f"🔧 **API Implementation Guide**\n\n"
-                f"🔑 **Your Token:** `{disp_token}`\n\n"
-                f"Choose implementation method:",
+                rich_message=InputRichMessage(html=content_html),
                 reply_markup=InlineKeyboardMarkup([
                     [
-                        InlineKeyboardButton("🌐 GET Examples", callback_data="impl_get_all"),
-                        InlineKeyboardButton("🐍 Python Implement", callback_data="impl_python_all")
+                        InlineKeyboardButton("🌐 GET Examples", callback_data="impl_get_all", style=ButtonStyle.PRIMARY),
+                        InlineKeyboardButton("🐍 Python Implement", callback_data="impl_python_all", style=ButtonStyle.PRIMARY)
                     ],
                     [
-                        InlineKeyboardButton("📋 Quick Reference", callback_data="impl_quick_ref"),
-                        InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")
+                        InlineKeyboardButton("📋 Quick Reference", callback_data="impl_quick_ref", style=ButtonStyle.PRIMARY),
+                        InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu", style=ButtonStyle.DEFAULT)
                     ]
                 ])
             )
@@ -174,46 +353,55 @@ async def handle_callbacks(client: Client, callback_query: CallbackQuery):
         request_count = await get_user_request_count(user_id)
         limit = 10000 if is_admin(user_id) else 1000
         remaining = max(0, limit - request_count)
-        disp_token = mask_token(token) if is_grp else token
+        disp_token = token
+        admin_badge = "👑 Admin (10,000 req/day)" if is_admin(user_id) else "👤 Standard (1,000 req/day)"
 
-        status_text = (
-            f"📊 **Usage Statistics**\n\n"
-            f"🔑 Token: `{disp_token}`\n"
-            f"📈 Used today: **{request_count}**/{limit}\n"
-            f"📉 Remaining: **{remaining}**\n"
-            f"🕒 Reset: Midnight UTC\n"
-        )
-
-        if is_admin(user_id):
-            status_text += "\n👑 **Admin privileges active**"
-
-        # Progress bar
-        progress = int((request_count / limit) * 10)
+        progress = min(int((request_count / limit) * 10), 10)
         bar = "🟩" * progress + "⬜" * (10 - progress)
-        status_text += f"\n\n📊 Progress: {bar}"
+
+        content_html = f"""<h1>Usage Statistics</h1>
+<blockquote>Real-time quota monitoring and rate limit status.</blockquote>
+
+<table border="1">
+  <tr><th>Metric</th><th>Status</th></tr>
+  <tr><td><b>Token</b></td><td><code>{disp_token}</code></td></tr>
+  <tr><td><b>Tier</b></td><td>{admin_badge}</td></tr>
+  <tr><td><b>Used Today</b></td><td><b>{request_count:,}</b> / {limit:,}</td></tr>
+  <tr><td><b>Remaining</b></td><td><b>{remaining:,}</b></td></tr>
+  <tr><td><b>Quota Reset</b></td><td>Midnight UTC</td></tr>
+  <tr><td><b>Progress</b></td><td>{bar}</td></tr>
+</table>
+
+<details>
+  <summary>Rate Limiting Rules</summary>
+  <p>• Data endpoints (<code>/info</code>, <code>/stream</code>): {limit:,} req/day<br/>
+  • Search &amp; Discovery (<code>/search</code>, <code>/trending</code>): Unlimited</p>
+</details>"""
 
         if is_grp:
-            status_text += "\n\n🔒 *Token is masked in group chats for security.*"
+            content_html += "<blockquote>🔒 <b>Ephemeral:</b> Only visible to you in this group.</blockquote>"
 
         await callback_query.answer()
         await callback_query.edit_message_text(
-            status_text,
+            rich_message=InputRichMessage(html=content_html),
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔄 Refresh", callback_data="usage_status")],
-                [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")]
+                [InlineKeyboardButton("🔄 Refresh", callback_data="usage_status", style=ButtonStyle.PRIMARY)],
+                [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu", style=ButtonStyle.DEFAULT)]
             ])
         )
 
     elif data == "revoke_token":
         await callback_query.answer()
+        content_html = """<h1>Revoke API Token</h1>
+<blockquote>⚠️ <b>Are you sure?</b> This action will permanently invalidate your current token and generate a new one immediately.</blockquote>
+<p>You will need to update the token in all active scripts and servers.</p>"""
+
         await callback_query.edit_message_text(
-            "⚠️ **Are you sure?**\n\n"
-            "This will revoke your current token and generate a new one.\n"
-            "You'll need to update all your API calls with the new token.",
+            rich_message=InputRichMessage(html=content_html),
             reply_markup=InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("✅ Yes, Revoke", callback_data="confirm_revoke"),
-                    InlineKeyboardButton("❌ Cancel", callback_data="back_menu")
+                    InlineKeyboardButton("✅ Yes, Revoke", callback_data="confirm_revoke", style=ButtonStyle.DANGER),
+                    InlineKeyboardButton("❌ Cancel", callback_data="back_menu", style=ButtonStyle.DEFAULT)
                 ]
             ])
         )
@@ -225,923 +413,712 @@ async def handle_callbacks(client: Client, callback_query: CallbackQuery):
         # Generate new token
         new_token = generate_token()
         await set_user_token(user_id, new_token)
-        disp_token = mask_token(new_token) if is_grp else new_token
+        disp_token = new_token
 
         await callback_query.answer("✅ Token revoked successfully!")
+        content_html = f"""<h1>Token Revoked Successfully</h1>
+<blockquote>Your old token has been destroyed and a fresh token is active.</blockquote>
+
+<table border="1">
+  <tr><th>Configuration</th><th>Value</th></tr>
+  <tr><td><b>New Token</b></td><td><code>{disp_token}</code></td></tr>
+  <tr><td><b>Status</b></td><td><b>Active &amp; Ready</b></td></tr>
+</table>
+
+<blockquote>⚠️ <b>Important:</b> Update your API calls with the new token immediately.</blockquote>"""
+
         await callback_query.edit_message_text(
-            f"✅ **Token Revoked Successfully!**\n\n"
-            f"🔑 Your new token: `{disp_token}`\n\n"
-            f"⚠️ **Important:** Update your API calls with the new token immediately.",
+            rich_message=InputRichMessage(html=content_html),
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")]
+                [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu", style=ButtonStyle.DEFAULT)]
             ])
         )
 
     elif data == "help":
-        user_token = await get_user_token_display(user_id, is_grp, default="YOUR_TOKEN")
+        user_token = await get_user_token(user_id) or "YOUR_TOKEN"
         await callback_query.answer()
+        content_html = f"""<h1>Help &amp; Documentation</h1>
+<blockquote>Quick reference guide for bot commands and core API endpoints.</blockquote>
+
+<h2>Bot Commands</h2>
+<table border="1">
+  <tr><th>Command</th><th>Description</th></tr>
+  <tr><td><code>/start</code></td><td>Provision or view your token</td></tr>
+  <tr><td><code>/menu</code></td><td>Interactive navigation menu</td></tr>
+  <tr><td><code>/status</code></td><td>Check daily quota consumption</td></tr>
+  <tr><td><code>/token</code></td><td>View active API bearer token</td></tr>
+  <tr><td><code>/revoke</code></td><td>Cycle and revoke credentials</td></tr>
+  <tr><td><code>/ping</code></td><td>Inspect latency and uptime</td></tr>
+</table>
+
+<h2>API Endpoints</h2>
+<table border="1">
+  <tr><th>Endpoint</th><th>Auth Required</th><th>Description</th></tr>
+  <tr><td><code>/info</code></td><td>Yes</td><td>Video metadata + direct stream URL</td></tr>
+  <tr><td><code>/search</code></td><td>No (Free)</td><td>Fast YouTube video search</td></tr>
+  <tr><td><code>/rate-limit-status</code></td><td>Yes</td><td>Check remaining quota via API</td></tr>
+  <tr><td><code>/health</code></td><td>No</td><td>Service health probe</td></tr>
+</table>
+
+<details>
+  <summary>Python Quick Example</summary>
+  <pre><code class="language-python">import requests
+res = requests.get(
+    "{api_url('info')}",
+    params={{"token": "{user_token}", "q": "VIDEO_URL"}}
+)
+print(res.json())</code></pre>
+</details>"""
+
         await callback_query.edit_message_text(
-            "❓ **Help & Commands**\n\n"
-            "🤖 **Bot Commands:**\n"
-            "• `/start` - Get your API token\n"
-            "• `/menu` - Show main menu\n"
-            "• `/status` - Check usage status\n"
-            "• `/token` - View current token\n"
-            "• `/revoke` - Revoke current token\n\n"
-            "🌐 **API Base URL:**\n"
-            f"`{api_url()}/`\n\n"
-            "🔗 **API Endpoints:**\n"
-            "• `/info` - Get video info + streamable URL (requires token)\n"
-            "• `/search` - Search videos (free, no URLs)\n"
-            "\n"
-            "• `/health` - Health check\n\n"
-            "📝 **Usage:**\n"
-            f"Example: `{api_url('info')}?token={user_token}&q=VIDEO_URL`\n\n"
-            "🐍 **Python Example:**\n"
-            "```python\n"
-            "import requests\n"
-            "response = requests.get(\n"
-            f"    '{api_url('info')}',\n"
-            f"    params={{'token': '{user_token}', 'q': 'VIDEO_URL'}}\n"
-            ")\n"
-            "data = response.json()\n"
-            "```",
+            rich_message=InputRichMessage(html=content_html),
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📖 API Docs", callback_data="api_docs")],
-                [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")]
+                [InlineKeyboardButton("📖 Full API Docs", callback_data="api_docs", style=ButtonStyle.PRIMARY)],
+                [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu", style=ButtonStyle.DEFAULT)]
             ])
         )
 
     elif data == "impl_get_all":
-        user_token = await get_user_token_display(user_id, is_grp, default="YOUR_TOKEN")
+        user_token = await get_user_token(user_id) or "YOUR_TOKEN"
         await callback_query.answer()
+        content_html = f"""<h1>GET Endpoint Examples</h1>
+<blockquote>Ready-to-use HTTP GET requests with your credentials.</blockquote>
+
+<h2>1. Video Info &amp; Stream URL</h2>
+<pre><code>GET {api_url('info')}?token={user_token}&amp;q=https://youtube.com/watch?v=dQw4w9WgXcQ</code></pre>
+
+<h2>2. Search Videos (Free)</h2>
+<pre><code>GET {api_url('search')}?q=python+tutorial&amp;max_results=5</code></pre>
+
+<h2>3. Rate Limit Quota Check</h2>
+<pre><code>GET {api_url('rate-limit-status')}?token={user_token}</code></pre>
+
+<h2>4. Health Probe</h2>
+<pre><code>GET {api_url('health')}</code></pre>"""
+
         await callback_query.edit_message_text(
-            "🌐 **All API Endpoints - GET Examples**\n\n"
-            "**1. Video Info:**\n"
-            "```\n"
-            f"GET {api_url('info')}?token={user_token}&q=https://youtube.com/watch?v=dQw4w9WgXcQ\n"
-            "```\n\n"
-            "**2. Search Videos (Free):**\n"
-            "```\n"
-            f"GET {api_url('search')}?q=python tutorial&max_results=5\n"
-            "```\n\n"
-            "**4. Rate Limit Status:**\n"
-            "```\n"
-            f"GET {api_url('rate-limit-status')}?token={user_token}\n"
-            "```\n\n"
-            "**5. Health Check:**\n"
-            "```\n"
-            f"GET {api_url('health')}\n"
-            "```",
+            rich_message=InputRichMessage(html=content_html),
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔙 Back to Implementation", callback_data="api_implementation")]
+                [InlineKeyboardButton("🔙 Back to Implementation", callback_data="api_implementation", style=ButtonStyle.DEFAULT)]
             ])
         )
 
     elif data == "impl_python_all":
-        user_token = await get_user_token_display(user_id, is_grp, default="YOUR_TOKEN")
+        user_token = await get_user_token(user_id) or "YOUR_TOKEN"
         await callback_query.answer()
+        content_html = f"""<h1>Python Implementation (Part 1)</h1>
+<blockquote>Lightweight standalone helper functions using <code>requests</code>.</blockquote>
+
+<pre><code class="language-python">import requests
+from typing import List, Dict, Optional, Tuple
+
+API_TOKEN = "{user_token}"
+BASE_URL = "{api_url()}"
+
+def get_video_info(url_or_query: str, max_results: int = 1):
+    \"\"\"Returns direct stream URL and metadata.\"\"\"
+    r = requests.get(
+        f"{{BASE_URL}}/info",
+        params={{"token": API_TOKEN, "q": url_or_query, "max_results": max_results}},
+        timeout=30
+    )
+    return r.json()
+
+def search_videos(query: str, max_results: int = 5):
+    \"\"\"Free search endpoint without stream URLs.\"\"\"
+    r = requests.get(
+        f"{{BASE_URL}}/search",
+        params={{"q": query, "max_results": max_results}},
+        timeout=30
+    )
+    return r.json().get("results", [])</code></pre>"""
+
         await callback_query.edit_message_text(
-            "🐍 **Complete Python Implementation**\n\n"
-            "```python\n"
-            "import requests\n"
-            "import json\n"
-            "import time\n"
-            "from typing import List, Dict, Optional, Tuple\n"
-            "from datetime import datetime\n\n"
-            f"API_TOKEN = '{user_token}'\n"
-            f"BASE_URL = '{api_url()}'\n\n"
-            "def get_video_info(url_or_query: str, max_results: int = 1) -> Tuple[str, str, int, str, str, int, str, str, str]:\n"
-            "    \"\"\"Get video info - returns (title, video_id, duration, youtube_link, channel_name, views, stream_url, thumbnail, time_taken)\"\"\"\n"
-            "    try:\n"
-            "        response = requests.get(\n"
-            "            f'{BASE_URL}/info',\n"
-            "            params={'token': API_TOKEN, 'q': url_or_query, 'max_results': max_results},\n"
-            "            timeout=30\n"
-            "        )\n"
-            "        response.raise_for_status()\n"
-            "        data = response.json()\n"
-            "        \n"
-            "        if 'error' in data:\n"
-            "            return None, None, None, None, None, None, None, data.get('error')\n"
-            "        \n"
-            "        return (\n"
-            "            data.get('title', 'N/A'),\n"
-            "            data.get('video_id', 'N/A'),\n"
-            "            data.get('duration', 0),\n"
-            "            data.get('youtube_link', 'N/A'),\n"
-            "            data.get('channel_name', 'N/A'),\n"
-            "            data.get('views', 0),\n"
-            "            data.get('url', 'N/A'),\n"
-            "            data.get('thumbnail', 'N/A'),\n"
-            "            data.get('time_taken', 'N/A')\n"
-            "        )\n"
-            "    except requests.RequestException as e:\n"
-            "        return None, None, None, None, None, None, None, str(e)\n\n"
-            "def search_videos(query: str, max_results: int = 5) -> List[Tuple[str, str, str, int, int, str]]:\n"
-            "    \"\"\"Search videos - returns list of (title, video_id, channel_name, duration, views, youtube_link)\"\"\"\n"
-            "    try:\n"
-            "        response = requests.get(\n"
-            "            f'{BASE_URL}/search',\n"
-            "            params={'q': query, 'max_results': max_results},\n"
-            "            timeout=30\n"
-            "        )\n"
-            "        response.raise_for_status()\n"
-            "        data = response.json()\n"
-            "        \n"
-            "        if 'error' in data:\n"
-            "            return []\n"
-            "        \n"
-            "        results = []\n"
-            "        for video in data.get('results', []):\n"
-            "            results.append((\n"
-            "                video.get('title', 'N/A'),\n"
-            "                video.get('video_id', 'N/A'),\n"
-            "                video.get('channel_name', 'N/A'),\n"
-            "                video.get('duration', 0),\n"
-            "                video.get('views', 0),\n"
-            "                video.get('youtube_link', 'N/A')\n"
-            "            ))\n"
-            "        return results\n"
-            "    except requests.RequestException as e:\n"
-            "        return []\n\n"
-            "def get_rate_limit_status() -> Tuple[int, int, int, bool, str]:\n"
-            "    \"\"\"Get quota status - returns (daily_limit, requests_used, requests_remaining, is_admin, reset_time)\"\"\"\n"
-            "    try:\n"
-            "        response = requests.get(\n"
-            "            f'{BASE_URL}/rate-limit-status',\n"
-            "            params={'token': API_TOKEN},\n"
-            "            timeout=10\n"
-            "        )\n"
-            "        response.raise_for_status()\n"
-            "        data = response.json()\n"
-            "        \n"
-            "        return (\n"
-            "            data.get('daily_limit', 0),\n"
-            "            data.get('requests_used', 0),\n"
-            "            data.get('requests_remaining', 0),\n"
-            "            data.get('is_admin', False),\n"
-            "            data.get('reset_time', 'N/A')\n"
-            "        )\n"
-            "    except requests.RequestException as e:\n"
-            "        return 0, 0, 0, False, str(e)\n\n"
-            "```",
+            rich_message=InputRichMessage(html=content_html),
             reply_markup=InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("📄 Part 2: Client Class", callback_data="impl_python_part2"),
-                    InlineKeyboardButton("💡 Examples", callback_data="impl_python_examples")
+                    InlineKeyboardButton("📄 Part 2: Client Class", callback_data="impl_python_part2", style=ButtonStyle.PRIMARY),
+                    InlineKeyboardButton("💡 Usage Examples", callback_data="impl_python_examples", style=ButtonStyle.PRIMARY)
                 ],
-                [InlineKeyboardButton("🔙 Back to Implementation", callback_data="api_implementation")]
+                [InlineKeyboardButton("🔙 Back to Implementation", callback_data="api_implementation", style=ButtonStyle.DEFAULT)]
             ])
         )
 
     elif data == "impl_quick_ref":
-        user_token = await get_user_token_display(user_id, is_grp, default="YOUR_TOKEN")
+        user_token = await get_user_token(user_id) or "YOUR_TOKEN"
         await callback_query.answer()
+        content_html = f"""<h1>Quick Reference Guide</h1>
+<blockquote>Essential configuration values and endpoint parameters.</blockquote>
+
+<table border="1">
+  <tr><th>Resource</th><th>Target</th></tr>
+  <tr><td><b>Token</b></td><td><code>{user_token}</code></td></tr>
+  <tr><td><b>Base URL</b></td><td><code>{api_url()}</code></td></tr>
+</table>
+
+<h2>Endpoints</h2>
+<table border="1">
+  <tr><th>Route</th><th>Output</th></tr>
+  <tr><td><code>/info</code></td><td>Metadata + direct MP4/Audio stream URL</td></tr>
+  <tr><td><code>/search</code></td><td>Video title, ID, duration, channel</td></tr>
+  <tr><td><code>/rate-limit-status</code></td><td>Current quota consumption</td></tr>
+  <tr><td><code>/health</code></td><td>Service status check</td></tr>
+</table>
+
+<details>
+  <summary>Python Quick One-Liner</summary>
+  <pre><code class="language-python">import requests
+data = requests.get("{api_url('info')}?token={user_token}&amp;q=VIDEO_URL").json()</code></pre>
+</details>"""
+
         await callback_query.edit_message_text(
-            "📋 **Quick Reference**\n\n"
-            f"🔑 **Token:** `{user_token}`\n"
-            f"🌐 **Base URL:** `{api_url()}`\n\n"
-            "**Endpoints:**\n"
-            f"• `/info?token={user_token}&q=URL` - ✅ Video info + STREAM URL\n"
-            "• `/search?q=QUERY&max_results=5` - ❌ Search only (NO STREAM)\n"
-            f"• `/rate-limit-status?token={user_token}` - Quota\n"
-            "• `/health` - Health check\n\n"
-            "**Rate Limits:**\n"
-            "• Data endpoints: 1000/day\n"
-            "• Search: Unlimited\n"
-            "• Batch: Max 5 URLs per request\n\n"
-            "**Python Quick Start:**\n"
-            "```python\n"
-            "import requests\n"
-            f"r = requests.get('{api_url('info')}?token={user_token}&q=VIDEO_URL')\n"
-            "data = r.json()\n"
-            "```",
+            rich_message=InputRichMessage(html=content_html),
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔙 Back to Implementation", callback_data="api_implementation")]
+                [InlineKeyboardButton("🔙 Back to Implementation", callback_data="api_implementation", style=ButtonStyle.DEFAULT)]
             ])
         )
 
     elif data == "api_docs":
         await callback_query.answer()
+        content_html = f"""<h1>API Documentation</h1>
+<blockquote>Interactive endpoint reference and schema descriptions.</blockquote>
+
+<table border="1">
+  <tr><th>Feature</th><th>Specification</th></tr>
+  <tr><td><b>Base URL</b></td><td><code>{api_url()}/</code></td></tr>
+  <tr><td><b>Authentication</b></td><td><code>?token=YOUR_TOKEN</code> or Bearer Header</td></tr>
+  <tr><td><b>Quota</b></td><td>1,000 calls/day (Data), Unlimited (Search)</td></tr>
+</table>
+
+<p>Select an endpoint below to inspect parameters and example payloads:</p>"""
+
         await callback_query.edit_message_text(
-            "📖 **API Documentation**\n\n"
-            f"🔗 **Base URL:** `{api_url()}/`\n\n"
-            "📝 **Authentication:**\n"
-            "Add your token as query parameter:\n"
-            "```\n"
-            "?token=YOUR_TOKEN\n"
-            "```\n\n"
-            "📊 **Rate Limits:**\n"
-            "• Data endpoints: 1000/day\n"
-            "• Search: Unlimited\n\n"
-            "Select an endpoint to view detailed documentation:",
+            rich_message=InputRichMessage(html=content_html),
             reply_markup=InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("🎥 Video Info", callback_data="api_info"),
-                    InlineKeyboardButton("🔍 Search", callback_data="api_search")
+                    InlineKeyboardButton("🎥 Video Info", callback_data="api_info", style=ButtonStyle.PRIMARY),
+                    InlineKeyboardButton("🔍 Search", callback_data="api_search", style=ButtonStyle.PRIMARY)
                 ],
                 [
-                    InlineKeyboardButton("📊 Rate Limit", callback_data="api_ratelimit"),
-                    InlineKeyboardButton("❤️ Health Check", callback_data="api_health")
+                    InlineKeyboardButton("📊 Rate Limit", callback_data="api_ratelimit", style=ButtonStyle.PRIMARY),
+                    InlineKeyboardButton("❤️ Health Check", callback_data="api_health", style=ButtonStyle.PRIMARY)
                 ],
                 [
-                    InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")
+                    InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu", style=ButtonStyle.DEFAULT)
                 ]
             ])
         )
 
     elif data == "api_info":
-        user_token = await get_user_token_display(user_id, is_grp, default="YOUR_TOKEN")
+        user_token = await get_user_token(user_id) or "YOUR_TOKEN"
         await callback_query.answer()
+        content_html = f"""<h1>Video Info Endpoint</h1>
+<blockquote>Extract rich metadata and playable direct CDN stream URLs.</blockquote>
+
+<table border="1">
+  <tr><th>Property</th><th>Value</th></tr>
+  <tr><td><b>Path</b></td><td><code>{api_url('info')}</code></td></tr>
+  <tr><td><b>Method</b></td><td><code>GET</code></td></tr>
+  <tr><td><b>Auth</b></td><td>Bearer Token Required</td></tr>
+</table>
+
+<h2>Parameters</h2>
+<table border="1">
+  <tr><th>Param</th><th>Type</th><th>Description</th></tr>
+  <tr><td><code>token</code></td><td>string</td><td>Your personal API token</td></tr>
+  <tr><td><code>q</code></td><td>string</td><td>YouTube video URL, ID, or query</td></tr>
+  <tr><td><code>max_results</code></td><td>int</td><td>Results count when searching (default 1)</td></tr>
+</table>"""
+
         await callback_query.edit_message_text(
-            "🎥 **Video Info Endpoint**\n\n"
-            f"**Endpoint:** `{api_url('info')}`\n"
-            "**Method:** `GET`\n"
-            "**Auth:** Token required\n"
-            "**Returns:** ✅ Video metadata + **DIRECT STREAM URL**\n\n"
-            "**Parameters:**\n"
-            "• `token` - Your API token\n"
-            "• `q` - YouTube URL or search query\n"
-            "• `max_results` - Max results (for search)\n\n"
-            "Select example type:",
+            rich_message=InputRichMessage(html=content_html),
             reply_markup=InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("🌐 GET Examples", callback_data="api_info_get"),
-                    InlineKeyboardButton("🐍 Python Implementation", callback_data="api_info_python")
+                    InlineKeyboardButton("🌐 GET Examples", callback_data="api_info_get", style=ButtonStyle.PRIMARY),
+                    InlineKeyboardButton("🐍 Python Code", callback_data="api_info_python", style=ButtonStyle.PRIMARY)
                 ],
-                [InlineKeyboardButton("🔙 Back to API Docs", callback_data="api_docs")]
+                [InlineKeyboardButton("🔙 Back to API Docs", callback_data="api_docs", style=ButtonStyle.DEFAULT)]
             ])
         )
 
     elif data == "api_info_get":
-        user_token = await get_user_token_display(user_id, is_grp, default="YOUR_TOKEN")
+        user_token = await get_user_token(user_id) or "YOUR_TOKEN"
         await callback_query.answer()
+        content_html = f"""<h1>Video Info — GET Examples</h1>
+<blockquote>cURL and browser query formats for <code>/info</code>.</blockquote>
+
+<h2>1. Query by Video URL</h2>
+<pre><code>GET {api_url('info')}?token={user_token}&amp;q=https://youtube.com/watch?v=dQw4w9WgXcQ</code></pre>
+
+<h2>2. Query by Search Term</h2>
+<pre><code>GET {api_url('info')}?token={user_token}&amp;q=python+tutorial&amp;max_results=1</code></pre>
+
+<h2>3. cURL Command</h2>
+<pre><code class="language-bash">curl "{api_url('info')}?token={user_token}&amp;q=https://youtube.com/watch?v=dQw4w9WgXcQ"</code></pre>"""
+
         await callback_query.edit_message_text(
-            "🌐 **Video Info - GET Examples**\n\n"
-            "**1. Get info by URL:**\n"
-            "```\n"
-            f"GET {api_url('info')}?token={user_token}&q=https://youtube.com/watch?v=dQw4w9WgXcQ\n"
-            "```\n\n"
-            "**2. Search single video:**\n"
-            "```\n"
-            f"GET {api_url('info')}?token={user_token}&q=python tutorial&max_results=1\n"
-            "```\n\n"
-            "**3. Search multiple videos:**\n"
-            "```\n"
-            f"GET {api_url('info')}?token={user_token}&q=machine learning&max_results=5\n"
-            "```\n\n"
-            "**4. Using curl:**\n"
-            "```bash\n"
-            f"curl \"{api_url('info')}?token={user_token}&q=https://youtube.com/watch?v=VIDEO_ID\"\n"
-            "```",
+            rich_message=InputRichMessage(html=content_html),
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔙 Back to Video Info", callback_data="api_info")]
+                [InlineKeyboardButton("🔙 Back to Video Info", callback_data="api_info", style=ButtonStyle.DEFAULT)]
             ])
         )
 
     elif data == "api_info_python":
-        user_token = await get_user_token_display(user_id, is_grp, default="YOUR_TOKEN")
+        user_token = await get_user_token(user_id) or "YOUR_TOKEN"
         await callback_query.answer()
+        content_html = f"""<h1>Video Info — Python Code</h1>
+<blockquote>Robust client script with error and timeout handling.</blockquote>
+
+<pre><code class="language-python">import requests
+
+TOKEN = "{user_token}"
+BASE = "{api_url()}"
+
+def fetch_video(url_or_query: str):
+    params = {{"token": TOKEN, "q": url_or_query, "max_results": 1}}
+    try:
+        r = requests.get(f"{{BASE}}/info", params=params, timeout=30)
+        r.raise_for_status()
+        data = r.json()
+        print(f"Title: {{data.get('title')}}")
+        print(f"Stream URL: {{data.get('url')}}")
+        return data
+    except Exception as e:
+        print(f"Error fetching info: {{e}}")
+        return None
+
+# Run fetch
+fetch_video("https://youtube.com/watch?v=dQw4w9WgXcQ")</code></pre>"""
+
         await callback_query.edit_message_text(
-            "🐍 **Video Info - Python Implementation**\n\n"
-            "```python\n"
-            "import requests\n"
-            "import json\n\n"
-            f"TOKEN = '{user_token}'\n"
-            f"BASE = '{api_url()}'\n\n"
-            "def get_video_info(url_or_query, max_results=1):\n"
-            "    \"\"\"Get detailed video information\"\"\"\n"
-            "    params = {\n"
-            "        'token': TOKEN,\n"
-            "        'q': url_or_query,\n"
-            "        'max_results': max_results\n"
-            "    }\n"
-            "    \n"
-            "    try:\n"
-            "        response = requests.get(f'{BASE}/info', params=params, timeout=30)\n"
-            "        response.raise_for_status()\n"
-            "        \n"
-            "        data = response.json()\n"
-            "        \n"
-            "        if 'error' in data:\n"
-            "            print(f\"API Error: {data['error']}\")\n"
-            "            return None\n"
-            "        \n"
-            "        return data\n"
-            "        \n"
-            "    except requests.exceptions.Timeout:\n"
-            "        print(\"Request timed out\")\n"
-            "    except requests.exceptions.HTTPError as e:\n"
-            "        if response.status_code == 429:\n"
-            "            print(\"Rate limit exceeded\")\n"
-            "        elif response.status_code == 401:\n"
-            "            print(\"Invalid token\")\n"
-            "        else:\n"
-            "            print(f\"HTTP Error: {e}\")\n"
-            "    except Exception as e:\n"
-            "        print(f\"Error: {e}\")\n"
-            "    \n"
-            "    return None\n\n"
-            "# Usage examples:\n"
-            "# By URL\n"
-            "video_info = get_video_info('https://youtube.com/watch?v=dQw4w9WgXcQ')\n"
-            "if video_info:\n"
-            "    print(f\"Title: {video_info['title']}\")\n"
-            "    print(f\"Duration: {video_info['duration']} seconds\")\n"
-            "    print(f\"Views: {video_info.get('views', 'N/A')}\")\n"
-            "    print(f\"Stream URL: {video_info['url']}\")\n"
-            "    print(f\"Thumbnail: {video_info['thumbnail']}\")\n\n"
-            "# By search query\n"
-            "search_result = get_video_info('python tutorial', max_results=1)\n"
-            "if search_result:\n"
-            "    print(f\"Found: {search_result['title']}\")\n"
-            "```",
+            rich_message=InputRichMessage(html=content_html),
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔙 Back to Video Info", callback_data="api_info")]
+                [InlineKeyboardButton("🔙 Back to Video Info", callback_data="api_info", style=ButtonStyle.DEFAULT)]
             ])
         )
 
     elif data == "api_search":
         await callback_query.answer()
+        content_html = f"""<h1>Search Endpoint (Free)</h1>
+<blockquote>Fast video searching with metadata (no quota consumed).</blockquote>
+
+<table border="1">
+  <tr><th>Property</th><th>Specification</th></tr>
+  <tr><td><b>Path</b></td><td><code>{api_url('search')}</code></td></tr>
+  <tr><td><b>Method</b></td><td><code>GET</code></td></tr>
+  <tr><td><b>Auth</b></td><td>None (Free &amp; Public)</td></tr>
+  <tr><td><b>Output</b></td><td>Metadata list (No stream URLs)</td></tr>
+</table>
+
+<h2>Parameters</h2>
+<table border="1">
+  <tr><th>Param</th><th>Type</th><th>Description</th></tr>
+  <tr><td><code>q</code></td><td>string</td><td>Search keywords</td></tr>
+  <tr><td><code>max_results</code></td><td>int</td><td>Number of results (1–20)</td></tr>
+</table>"""
+
         await callback_query.edit_message_text(
-            "🔍 **Search Endpoint** (FREE)\n\n"
-            f"**Endpoint:** `{api_url('search')}`\n"
-            "**Method:** `GET`\n"
-            "**Auth:** No token required\n"
-            "**Returns:** ❌ Metadata only (NO STREAM URLs)\n\n"
-            "**Parameters:**\n"
-            "• `q` - Search query\n"
-            "• `max_results` - Number of results (1-20)\n\n"
-            "Select example type:",
+            rich_message=InputRichMessage(html=content_html),
             reply_markup=InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("🌐 GET Examples", callback_data="api_search_get"),
-                    InlineKeyboardButton("🐍 Python Implementation", callback_data="api_search_python")
+                    InlineKeyboardButton("🌐 GET Examples", callback_data="api_search_get", style=ButtonStyle.PRIMARY),
+                    InlineKeyboardButton("🐍 Python Code", callback_data="api_search_python", style=ButtonStyle.PRIMARY)
                 ],
-                [InlineKeyboardButton("🔙 Back to API Docs", callback_data="api_docs")]
+                [InlineKeyboardButton("🔙 Back to API Docs", callback_data="api_docs", style=ButtonStyle.DEFAULT)]
             ])
         )
 
     elif data == "api_search_get":
         await callback_query.answer()
+        content_html = f"""<h1>Search — GET Examples</h1>
+<blockquote>Public search request patterns.</blockquote>
+
+<h2>1. Basic Single Result</h2>
+<pre><code>GET {api_url('search')}?q=python+tutorial&amp;max_results=1</code></pre>
+
+<h2>2. Multi-Result Batch (10 items)</h2>
+<pre><code>GET {api_url('search')}?q=machine+learning&amp;max_results=10</code></pre>
+
+<h2>3. cURL</h2>
+<pre><code class="language-bash">curl "{api_url('search')}?q=javascript+tutorial&amp;max_results=3"</code></pre>"""
+
         await callback_query.edit_message_text(
-            "🌐 **Search - GET Examples**\n\n"
-            "**1. Basic search (1 result):**\n"
-            "```\n"
-            f"GET {api_url('search')}?q=python tutorial&max_results=1\n"
-            "```\n\n"
-            "**2. Multiple results:**\n"
-            "```\n"
-            f"GET {api_url('search')}?q=machine learning&max_results=10\n"
-            "```\n\n"
-            "**3. URL encoded query:**\n"
-            "```\n"
-            f"GET {api_url('search')}?q=how%20to%20code&max_results=5\n"
-            "```\n\n"
-            "**4. Using curl:**\n"
-            "```bash\n"
-            f"curl \"{api_url('search')}?q=javascript tutorial&max_results=3\"\n"
-            "```\n\n"
-            "**5. Browser URL:**\n"
-            "```\n"
-            f"{api_url('search')}?q=react js&max_results=20\n"
-            "```",
+            rich_message=InputRichMessage(html=content_html),
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔙 Back to Search", callback_data="api_search")]
+                [InlineKeyboardButton("🔙 Back to Search", callback_data="api_search", style=ButtonStyle.DEFAULT)]
             ])
         )
 
     elif data == "api_search_python":
-        user_token = await get_user_token_display(user_id, is_grp, default="YOUR_TOKEN")
+        user_token = await get_user_token(user_id) or "YOUR_TOKEN"
         await callback_query.answer()
+        content_html = f"""<h1>Search — Python Implementation</h1>
+<blockquote>Search and parse YouTube video results.</blockquote>
+
+<pre><code class="language-python">import requests
+from typing import List, Dict
+
+BASE = "{api_url()}"
+
+def search_youtube(query: str, max_results: int = 5) -> List[Dict]:
+    params = {{"q": query, "max_results": min(max_results, 20)}}
+    r = requests.get(f"{{BASE}}/search", params=params, timeout=15)
+    r.raise_for_status()
+    return r.json().get("results", [])
+
+results = search_youtube("python async programming", 3)
+for v in results:
+    print(f"• {{v['title']}} ({{v.get('channel_name')}})")
+    print(f"  URL: https://youtube.com/watch?v={{v.get('video_id')}}")</code></pre>"""
+
         await callback_query.edit_message_text(
-            "🐍 **Search - Python Implementation**\n\n"
-            "```python\n"
-            "import requests\n"
-            "from typing import List, Dict, Optional\n\n"
-            f"BASE = '{api_url()}'\n\n"
-            "def search_videos(query: str, max_results: int = 5) -> Optional[List[Dict]]:\n"
-            "    \"\"\"Search for YouTube videos (free endpoint)\"\"\"\n"
-            "    params = {\n"
-            "        'q': query,\n"
-            "        'max_results': min(max_results, 20)  # API limit\n"
-            "    }\n"
-            "    \n"
-            "    try:\n"
-            "        response = requests.get(f'{BASE}/search', params=params, timeout=15)\n"
-            "        response.raise_for_status()\n"
-            "        \n"
-            "        data = response.json()\n"
-            "        \n"
-            "        if 'error' in data:\n"
-            "            print(f\"Search Error: {data['error']}\")\n"
-            "            return None\n"
-            "        \n"
-            "        return data.get('results', [])\n"
-            "        \n"
-            "    except requests.exceptions.RequestException as e:\n"
-            "        print(f\"Search request failed: {e}\")\n"
-            "        return None\n\n"
-            "def display_search_results(results: List[Dict]):\n"
-            "    \"\"\"Format and display search results\"\"\"\n"
-            "    if not results:\n"
-            "        print(\"No results found\")\n"
-            "        return\n"
-            "    \n"
-            "    print(f\"Found {len(results)} videos:\\n\")\n"
-            "    \n"
-            "    for i, video in enumerate(results, 1):\n"
-            "        title = video.get('title', 'N/A')\n"
-            "        channel = video.get('channel_name', 'N/A')\n"
-            "        duration = video.get('duration')\n"
-            "        views = video.get('views')\n"
-            "        video_id = video.get('video_id', '')\n"
-            "        \n"
-            "        print(f\"{i}. {title}\")\n"
-            "        print(f\"   Channel: {channel}\")\n"
-            "        \n"
-            "        if duration:\n"
-            "            mins, secs = divmod(duration, 60)\n"
-            "            print(f\"   Duration: {mins}:{secs:02d}\")\n"
-            "        \n"
-            "        if views:\n"
-            "            print(f\"   Views: {views:,}\")\n"
-            "        \n"
-            "        print(f\"   URL: https://youtube.com/watch?v={video_id}\\n\")\n\n"
-            "# Usage examples:\n"
-            "# Basic search\n"
-            "results = search_videos('python programming', max_results=3)\n"
-            "display_search_results(results)\n\n"
-            "# Advanced search with filtering\n"
-            "def search_and_filter(query: str, min_duration: int = 0):\n"
-            "    results = search_videos(query, max_results=10)\n"
-            "    if not results:\n"
-            "        return []\n"
-            "    \n"
-            "    # Filter by minimum duration\n"
-            "    filtered = [v for v in results if v.get('duration', 0) >= min_duration]\n"
-            "    return filtered\n\n"
-            "# Find videos longer than 5 minutes\n"
-            "long_videos = search_and_filter('machine learning', min_duration=300)\n"
-            "display_search_results(long_videos)\n"
-            "```",
+            rich_message=InputRichMessage(html=content_html),
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔙 Back to Search", callback_data="api_search")]
+                [InlineKeyboardButton("🔙 Back to Search", callback_data="api_search", style=ButtonStyle.DEFAULT)]
             ])
         )
 
-
     elif data == "api_ratelimit":
         await callback_query.answer()
+        content_html = f"""<h1>Rate Limit Status Endpoint</h1>
+<blockquote>Check your real-time quota balance and reset schedule via HTTP.</blockquote>
+
+<table border="1">
+  <tr><th>Property</th><th>Value</th></tr>
+  <tr><td><b>Path</b></td><td><code>{api_url('rate-limit-status')}</code></td></tr>
+  <tr><td><b>Method</b></td><td><code>GET</code></td></tr>
+  <tr><td><b>Auth</b></td><td>Bearer Token Required</td></tr>
+</table>"""
+
         await callback_query.edit_message_text(
-            "📊 **Rate Limit Status Endpoint**\n\n"
-            f"**Endpoint:** `{api_url('rate-limit-status')}`\n"
-            "**Method:** `GET`\n"
-            "**Auth:** Token required\n\n"
-            "**Parameters:**\n"
-            "• `token` - Your API token\n\n"
-            "Select example type:",
+            rich_message=InputRichMessage(html=content_html),
             reply_markup=InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("🌐 GET Examples", callback_data="api_ratelimit_get"),
-                    InlineKeyboardButton("🐍 Python Implementation", callback_data="api_ratelimit_python")
+                    InlineKeyboardButton("🌐 GET Examples", callback_data="api_ratelimit_get", style=ButtonStyle.PRIMARY),
+                    InlineKeyboardButton("🐍 Python Code", callback_data="api_ratelimit_python", style=ButtonStyle.PRIMARY)
                 ],
-                [InlineKeyboardButton("🔙 Back to API Docs", callback_data="api_docs")]
+                [InlineKeyboardButton("🔙 Back to API Docs", callback_data="api_docs", style=ButtonStyle.DEFAULT)]
             ])
         )
 
     elif data == "api_ratelimit_get":
-        user_token = await get_user_token_display(user_id, is_grp, default="YOUR_TOKEN")
+        user_token = await get_user_token(user_id) or "YOUR_TOKEN"
         await callback_query.answer()
+        content_html = f"""<h1>Rate Limit — GET Examples</h1>
+<blockquote>Inspect quota responses with cURL.</blockquote>
+
+<h2>Request</h2>
+<pre><code>GET {api_url('rate-limit-status')}?token={user_token}</code></pre>
+
+<h2>JSON Response Schema</h2>
+<pre><code class="language-json">{{
+  "user_id": 123456789,
+  "daily_limit": 1000,
+  "requests_used": 42,
+  "requests_remaining": 958,
+  "reset_time": "Midnight UTC",
+  "is_admin": false
+}}</code></pre>"""
+
         await callback_query.edit_message_text(
-            "🌐 **Rate Limit - GET Examples**\n\n"
-            "**1. Check your quota:**\n"
-            "```\n"
-            f"GET {api_url('rate-limit-status')}?token={user_token}\n"
-            "```\n\n"
-            "**2. Using curl:**\n"
-            "```bash\n"
-            f"curl \"{api_url('rate-limit-status')}?token={user_token}\"\n"
-            "```\n\n"
-            "**3. With formatted output:**\n"
-            "```bash\n"
-            f"curl -s \"{api_url('rate-limit-status')}?token={user_token}\" | jq .\n"
-            "```\n\n"
-            "**4. Browser URL:**\n"
-            "```\n"
-            f"{api_url('rate-limit-status')}?token={user_token}\n"
-            "```\n\n"
-            "**Example Response:**\n"
-            "```json\n"
-            "{\n"
-            "  \"user_id\": 123456,\n"
-            "  \"daily_limit\": 1000,\n"
-            "  \"requests_used\": 50,\n"
-            "  \"requests_remaining\": 950,\n"
-            "  \"reset_time\": \"Midnight UTC\",\n"
-            "  \"is_admin\": false,\n"
-            "  \"auth_method\": \"token\"\n"
-            "}\n"
-            "```",
+            rich_message=InputRichMessage(html=content_html),
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔙 Back to Rate Limit", callback_data="api_ratelimit")]
+                [InlineKeyboardButton("🔙 Back to Rate Limit", callback_data="api_ratelimit", style=ButtonStyle.DEFAULT)]
             ])
         )
 
     elif data == "api_ratelimit_python":
-        user_token = await get_user_token_display(user_id, is_grp, default="YOUR_TOKEN")
+        user_token = await get_user_token(user_id) or "YOUR_TOKEN"
         await callback_query.answer()
-        await callback_query.edit_message_text(
-            "🐍 **Python Examples**\n\n"
-            "```python\n"
-            "import requests\n\n"
-            f"TOKEN = '{user_token}'\n"
-            f"BASE = '{api_url()}'\n\n"
-            "# Search (free)\n"
-            "r = requests.get(f'{BASE}/search', \n"
-            "    params={'q': 'python tutorial', 'max_results': 5})\n"
-            "results = r.json()['results']\n\n"
-            "# Get info\n" 
-            "r = requests.get(f'{BASE}/info',\n"
-            "    params={'token': TOKEN, 'q': 'VIDEO_URL'})\n"
-            "data = r.json()\n\n"
+        content_html = f"""<h1>Rate Limit — Python Example</h1>
+<blockquote>Check remaining quota before executing heavy batch jobs.</blockquote>
 
-            "```",
+<pre><code class="language-python">import requests
+
+TOKEN = "{user_token}"
+BASE = "{api_url()}"
+
+def check_quota():
+    r = requests.get(f"{{BASE}}/rate-limit-status", params={{"token": TOKEN}}, timeout=10)
+    data = r.json()
+    print(f"Used: {{data['requests_used']}} / {{data['daily_limit']}}")
+    print(f"Remaining: {{data['requests_remaining']}}")
+    return data['requests_remaining'] > 0
+
+if check_quota():
+    print("✅ Ready to process video requests")</code></pre>"""
+
+        await callback_query.edit_message_text(
+            rich_message=InputRichMessage(html=content_html),
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔙 Back to Rate Limit", callback_data="api_ratelimit")]
+                [InlineKeyboardButton("🔙 Back to Rate Limit", callback_data="api_ratelimit", style=ButtonStyle.DEFAULT)]
             ])
         )
 
     elif data == "api_health":
         await callback_query.answer()
+        content_html = f"""<h1>Health Check Endpoint</h1>
+<blockquote>Automated health probe for monitoring and uptime checkers.</blockquote>
+
+<table border="1">
+  <tr><th>Property</th><th>Specification</th></tr>
+  <tr><td><b>Path</b></td><td><code>{api_url('health')}</code></td></tr>
+  <tr><td><b>Method</b></td><td><code>GET</code></td></tr>
+  <tr><td><b>Auth</b></td><td>None</td></tr>
+  <tr><td><b>Rate Limit</b></td><td>None</td></tr>
+</table>"""
+
         await callback_query.edit_message_text(
-            "❤️ **Health Check Endpoint**\n\n"
-            f"**Endpoint:** `{api_url('health')}`\n"
-            "**Method:** `GET`\n"
-            "**Auth:** No token required\n"
-            "**Rate Limit:** None\n\n"
-            "Select example type:",
+            rich_message=InputRichMessage(html=content_html),
             reply_markup=InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("🌐 GET Examples", callback_data="api_health_get"),
-                    InlineKeyboardButton("🐍 Python Implementation", callback_data="api_health_python")
+                    InlineKeyboardButton("🌐 GET Examples", callback_data="api_health_get", style=ButtonStyle.PRIMARY),
+                    InlineKeyboardButton("🐍 Python Code", callback_data="api_health_python", style=ButtonStyle.PRIMARY)
                 ],
-                [InlineKeyboardButton("🔙 Back to API Docs", callback_data="api_docs")]
+                [InlineKeyboardButton("🔙 Back to API Docs", callback_data="api_docs", style=ButtonStyle.DEFAULT)]
             ])
         )
 
     elif data == "api_health_get":
         await callback_query.answer()
+        content_html = f"""<h1>Health Probe — GET Examples</h1>
+<blockquote>Probe API health status and response latency.</blockquote>
+
+<h2>1. Direct GET</h2>
+<pre><code>GET {api_url('health')}</code></pre>
+
+<h2>2. cURL with Exit Code Check</h2>
+<pre><code class="language-bash">curl -f -s "{api_url('health')}" &amp;&amp; echo "API is Online"</code></pre>
+
+<h2>Response</h2>
+<pre><code class="language-json">{{
+  "status": "ok"
+}}</code></pre>"""
+
         await callback_query.edit_message_text(
-            "🌐 **GET Health Check Examples**\n\n"
-            "**1. Simple health check:**\n"
-            "```\n"
-            f"GET {api_url('health')}\n"
-            "```\n\n"
-            "**2. Using curl:**\n"
-            "```bash\n"
-            f"curl {api_url('health')}\n"
-            "```\n\n"
-            "**3. With timing information:**\n"
-            "```bash\n"
-            f"curl -w \"Response time: %{{time_total}}s\\n\" {api_url('health')}\n"
-            "```\n\n"
-            "**4. Test connectivity:**\n"
-            "```bash\n"
-            f"curl -f -s {api_url('health')} && echo \"API is healthy\" || echo \"API is down\"\n"
-            "```\n\n"
-            "**5. Browser URL:**\n"
-            "```\n"
-            f"{api_url('health')}\n"
-            "```\n\n"
-            "**Example Response:**\n"
-            "```json\n"
-            "{\n"
-            "  \"status\": \"ok\"\n"
-            "}\n"
-            "```\n\n"
-            "**Expected Response Time:** < 100ms",
+            rich_message=InputRichMessage(html=content_html),
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔙 Back to Health Check", callback_data="api_health")]
+                [InlineKeyboardButton("🔙 Back to Health Check", callback_data="api_health", style=ButtonStyle.DEFAULT)]
             ])
         )
 
     elif data == "api_health_python":
-        user_token = await get_user_token_display(user_id, is_grp, default="YOUR_TOKEN")
+        user_token = await get_user_token(user_id) or "YOUR_TOKEN"
         await callback_query.answer()
-        await callback_query.edit_message_text(
-            "🐍 **Python Examples**\n\n"
-            "```python\n"
-            "import requests\n\n"
-            f"TOKEN = '{user_token}'\n"
-            f"BASE = '{api_url()}'\n\n"
-            "# Search (free)\n"
-            "r = requests.get(f'{BASE}/search', \n"
-            "    params={'q': 'python tutorial', 'max_results': 5})\n"
-            "results = r.json()['results']\n\n"
-            "# Get info\n" 
-            "r = requests.get(f'{BASE}/info',\n"
-            "    params={'token': TOKEN, 'q': 'VIDEO_URL'})\n"
-            "data = r.json()\n\n"
+        content_html = f"""<h1>Health Check — Python Example</h1>
+<blockquote>Verify API connectivity with timeout bounds.</blockquote>
 
-            "```",
+<pre><code class="language-python">import requests
+
+def is_api_online():
+    try:
+        r = requests.get("{api_url('health')}", timeout=5)
+        return r.status_code == 200 and r.json().get("status") == "ok"
+    except requests.RequestException:
+        return False
+
+print("Online:" if is_api_online() else "Offline")</code></pre>"""
+
+        await callback_query.edit_message_text(
+            rich_message=InputRichMessage(html=content_html),
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔙 Back to Health Check", callback_data="api_health")]
+                [InlineKeyboardButton("🔙 Back to Health Check", callback_data="api_health", style=ButtonStyle.DEFAULT)]
             ])
         )
 
     elif data == "impl_python_part2":
-        user_token = await get_user_token_display(user_id, is_grp, default="YOUR_TOKEN")
+        user_token = await get_user_token(user_id) or "YOUR_TOKEN"
         await callback_query.answer()
+        content_html = f"""<h1>Python Implementation (Part 2)</h1>
+<blockquote>Production-ready <code>YtubeAPIClient</code> wrapper with connection pooling.</blockquote>
+
+<pre><code class="language-python">import requests
+from typing import Dict, List
+
+class YtubeAPIClient:
+    def __init__(self, token: str, base_url: str = "{api_url()}"):
+        self.token = token
+        self.base_url = base_url.rstrip("/")
+        self.session = requests.Session()
+
+    def get_info(self, url_or_query: str, max_results: int = 1) -> Dict:
+        r = self.session.get(
+            f"{{self.base_url}}/info",
+            params={{"token": self.token, "q": url_or_query, "max_results": max_results}},
+            timeout=30
+        )
+        r.raise_for_status()
+        return r.json()
+
+    def search(self, query: str, max_results: int = 5) -> List[Dict]:
+        r = self.session.get(
+            f"{{self.base_url}}/search",
+            params={{"q": query, "max_results": min(max_results, 20)}},
+            timeout=15
+        )
+        r.raise_for_status()
+        return r.json().get("results", [])
+
+    def quota(self) -> Dict:
+        r = self.session.get(f"{{self.base_url}}/rate-limit-status", params={{"token": self.token}})
+        return r.json()</code></pre>"""
+
         await callback_query.edit_message_text(
-            "🐍 **Python Implementation - Part 2**\n\n"
-            "```python\n"
-            "import requests\n"
-            "from typing import Dict, List\n\n"
-            "class YtubeAPIClient:\n"
-            "    \"\"\"Reusable client for the ytube_api endpoints.\"\"\"\n\n"
-            f"    BASE_URL = '{api_url()}'\n\n"
-            "    def __init__(self, token: str):\n"
-            "        self.token = token\n"
-            "        self.session = requests.Session()\n\n"
-            "    def _make_request(self, endpoint: str, params: Dict) -> Dict:\n"
-            "        \"\"\"Send a GET request to an endpoint and return the JSON body.\"\"\"\n"
-            "        response = self.session.get(\n"
-            "            f'{self.BASE_URL}{endpoint}',\n"
-            "            params=params,\n"
-            "            timeout=30,\n"
-            "        )\n"
-            "        response.raise_for_status()\n"
-            "        return response.json()\n\n"
-            "    def search_videos(self, query: str, max_results: int = 5) -> List[Dict]:\n"
-            "        \"\"\"Search for videos (free endpoint)\"\"\"\n"
-            "        params = {\n"
-            "            'q': query,\n"
-            "            'max_results': min(max_results, 20)  # API limit\n"
-            "        }\n"
-            "        result = self._make_request('/search', params)\n"
-            "        return result.get('results', [])\n\n"
-            "    def get_video_info(self, url_or_query: str, max_results: int = 1) -> Dict:\n"
-            "        \"\"\"Get detailed video information\"\"\"\n"
-            "        params = {\n"
-            "            'token': self.token,\n"
-            "            'q': url_or_query,\n"
-            "            'max_results': max_results\n"
-            "        }\n"
-            "        return self._make_request('/info', params)\n\n"
-            "    def check_rate_limit(self) -> Dict:\n"
-            "        \"\"\"Check current rate limit status\"\"\"\n"
-            "        params = {'token': self.token}\n"
-            "        return self._make_request('/rate-limit-status', params)\n\n"
-            "    def health_check(self) -> Dict:\n"
-            "        \"\"\"Check API health status\"\"\"\n"
-            "        return self._make_request('/health', {})\n\n"
-            "    def download_video(self, video_url: str, output_path: str = None):\n"
-            "        \"\"\"Download video using stream URL\"\"\"\n"
-            "        info = self.get_video_info(video_url)\n"
-            "        stream_url = info.get('url')\n"
-            "        \n"
-            "        if not stream_url:\n"
-            "            raise Exception('No stream URL found')\n"
-            "        \n"
-            "        filename = output_path or f\"{info.get('title', 'video')}.mp4\"\n"
-            "        \n"
-            "        with self.session.get(stream_url, stream=True) as r:\n"
-            "            r.raise_for_status()\n"
-            "            with open(filename, 'wb') as f:\n"
-            "                for chunk in r.iter_content(chunk_size=8192):\n"
-            "                    f.write(chunk)\n"
-            "        return filename\n"
-            "```",
+            rich_message=InputRichMessage(html=content_html),
             reply_markup=InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("📄 Part 1", callback_data="impl_python_all"),
-                    InlineKeyboardButton("💡 Examples", callback_data="impl_python_examples")
+                    InlineKeyboardButton("📄 Part 1", callback_data="impl_python_all", style=ButtonStyle.PRIMARY),
+                    InlineKeyboardButton("💡 Usage Examples", callback_data="impl_python_examples", style=ButtonStyle.PRIMARY)
                 ],
-                [InlineKeyboardButton("🔙 Back to Implementation", callback_data="api_implementation")]
+                [InlineKeyboardButton("🔙 Back to Implementation", callback_data="api_implementation", style=ButtonStyle.DEFAULT)]
             ])
         )
 
     elif data == "impl_python_examples":
-        user_token = await get_user_token_display(user_id, is_grp, default="YOUR_TOKEN")
+        user_token = await get_user_token(user_id) or "YOUR_TOKEN"
         await callback_query.answer()
+        content_html = f"""<h1>Python Usage Examples</h1>
+<blockquote>Calling client methods for search, info, and quota checks.</blockquote>
+
+<pre><code class="language-python">client = YtubeAPIClient("{user_token}")
+
+# 1. Search videos
+videos = client.search("python fast api", max_results=3)
+for v in videos:
+    print(f"• {{v['title']}} ({{v['channel_name']}})")
+
+# 2. Get direct streaming link
+info = client.get_info("https://youtube.com/watch?v=dQw4w9WgXcQ")
+print(f"Direct stream URL: {{info.get('url')}}")
+
+# 3. Check remaining quota
+status = client.quota()
+print(f"Remaining requests today: {{status.get('requests_remaining')}}")</code></pre>"""
+
         await callback_query.edit_message_text(
-            "🐍 **Python Usage Examples**\n\n"
-            "```python\n"
-            "# Initialize the client (class defined in Part 2)\n"
-            f"client = YtubeAPIClient('{user_token}')\n\n"
-            "# Example 1: Search for videos\n"
-            "try:\n"
-            "    videos = client.search_videos('python tutorial', max_results=5)\n"
-            "    for video in videos:\n"
-            "        print(f\"Title: {video['title']}\")\n"
-            "        print(f\"Channel: {video['channel_name']}\")\n"
-            "        print(f\"URL: {video['youtube_link']}\")\n"
-            "        print('-' * 50)\n"
-            "except Exception as e:\n"
-            "    print(f\"Search failed: {e}\")\n\n"
-            "# Example 2: Get video info by URL\n"
-            "try:\n"
-            "    url = 'https://youtube.com/watch?v=dQw4w9WgXcQ'\n"
-            "    info = client.get_video_info(url)\n"
-            "    \n"
-            "    print(f\"Title: {info['title']}\")\n"
-            "    print(f\"Duration: {info['duration']} seconds\")\n"
-            "    print(f\"Views: {info['views']:,}\")\n"
-            "    print(f\"Channel: {info['channel_name']}\")\n"
-            "    print(f\"Stream URL: {info['url']}\")\n"
-            "    print(f\"Thumbnail: {info['thumbnail']}\")\n\n"
-            "# Example 3: Check rate limit\n"
-            "try:\n"
-            "    status = client.check_rate_limit()\n"
-            "    used = status['requests_used']\n"
-            "    limit = status['daily_limit']\n"
-            "    remaining = status['requests_remaining']\n"
-            "    \n"
-            "    print(f\"Rate limit: {used}/{limit} ({remaining} remaining)\")\n"
-            "    \n"
-            "    if remaining < 10:\n"
-            "        print(\"⚠️ Warning: Low on requests!\")\n"
-            "except Exception as e:\n"
-            "    print(f\"Rate limit check failed: {e}\")\n"
-            "```",
+            rich_message=InputRichMessage(html=content_html),
             reply_markup=InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("🔄 Advanced Examples", callback_data="impl_python_advanced"),
-                    InlineKeyboardButton("🔧 Error Handling", callback_data="impl_python_errors")
+                    InlineKeyboardButton("🔄 Advanced Batching", callback_data="impl_python_advanced", style=ButtonStyle.PRIMARY),
+                    InlineKeyboardButton("🔧 Error Handling", callback_data="impl_python_errors", style=ButtonStyle.PRIMARY)
                 ],
-                [InlineKeyboardButton("🔙 Back to Implementation", callback_data="api_implementation")]
+                [InlineKeyboardButton("🔙 Back to Implementation", callback_data="api_implementation", style=ButtonStyle.DEFAULT)]
             ])
         )
 
     elif data == "impl_python_advanced":
-        user_token = await get_user_token_display(user_id, is_grp, default="YOUR_TOKEN")
+        user_token = await get_user_token(user_id) or "YOUR_TOKEN"
         await callback_query.answer()
+        content_html = f"""<h1>Advanced Batching &amp; Fallbacks</h1>
+<blockquote>Batch extraction with polite delays and automatic retry fallbacks.</blockquote>
+
+<pre><code class="language-python">import time
+
+def process_batch(client: YtubeAPIClient, urls: list[str]):
+    results = []
+    for i, url in enumerate(urls, 1):
+        try:
+            status = client.quota()
+            if status.get("requests_remaining", 0) &lt; 1:
+                print("Daily quota exhausted, stopping batch.")
+                break
+            info = client.get_info(url)
+            results.append(info)
+            time.sleep(0.3)  # Polite pacing
+        except Exception as e:
+            print(f"Failed {{url}}: {{e}}")
+    return results</code></pre>"""
+
         await callback_query.edit_message_text(
-            "🐍 **Advanced Python Examples**\n\n"
-            "```python\n"
-            "# Example 4: Batch processing with rate limiting\n"
-            "import time\n"
-            "from typing import List\n\n"
-            "def process_multiple_videos(client, urls: List[str]):\n"
-            "    results = []\n"
-            "    \n"
-            "    for i, url in enumerate(urls):\n"
-            "        try:\n"
-            "            # Check rate limit before each request\n"
-            "            status = client.check_rate_limit()\n"
-            "            if status['requests_remaining'] < 1:\n"
-            "                print(\"Rate limit reached, stopping...\")\n"
-            "                break\n"
-            "            \n"
-            "            print(f\"Processing {i+1}/{len(urls)}: {url}\")\n"
-            "            info = client.get_video_info(url)\n"
-            "            results.append(info)\n"
-            "            \n"
-            "            # Be nice to the API - small delay\n"
-            "            time.sleep(0.5)\n"
-            "            \n"
-            "        except Exception as e:\n"
-            "            print(f\"Failed to process {url}: {e}\")\n"
-            "            continue\n"
-            "    \n"
-            "    return results\n\n"
-            "# Example 5: Smart search with fallback\n"
-            "def smart_search(client, query: str):\n"
-            "    # First try free search\n"
-            "    try:\n"
-            "        search_results = client.search_videos(query, max_results=10)\n"
-            "        if search_results:\n"
-            "            print(f\"Found {len(search_results)} videos:\")\n"
-            "            return search_results\n"
-            "    except:\n"
-            "        pass\n"
-            "    \n"
-            "    # Fallback to direct search via info endpoint\n"
-            "    try:\n"
-            "        info_result = client.get_video_info(query, max_results=5)\n"
-            "        if 'results' in info_result:\n"
-            "            return info_result['results']\n"
-            "        else:\n"
-            "            return [info_result]  # Single video result\n"
-            "    except Exception as e:\n"
-            "        print(f\"Search failed completely: {e}\")\n"
-            "        return []\n"
-            "```",
+            rich_message=InputRichMessage(html=content_html),
             reply_markup=InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("💡 Basic Examples", callback_data="impl_python_examples"),
-                    InlineKeyboardButton("🔧 Error Handling", callback_data="impl_python_errors")
+                    InlineKeyboardButton("💡 Basic Examples", callback_data="impl_python_examples", style=ButtonStyle.PRIMARY),
+                    InlineKeyboardButton("🔧 Error Handling", callback_data="impl_python_errors", style=ButtonStyle.PRIMARY)
                 ],
-                [InlineKeyboardButton("🔙 Back to Implementation", callback_data="api_implementation")]
+                [InlineKeyboardButton("🔙 Back to Implementation", callback_data="api_implementation", style=ButtonStyle.DEFAULT)]
             ])
         )
 
     elif data == "impl_python_errors":
-        user_token = await get_user_token_display(user_id, is_grp, default="YOUR_TOKEN")
+        user_token = await get_user_token(user_id) or "YOUR_TOKEN"
         await callback_query.answer()
+        content_html = f"""<h1>Error Handling &amp; Best Practices</h1>
+<blockquote>Handling rate limits, expired tokens, and network retries.</blockquote>
+
+<pre><code class="language-python">import requests
+import time
+
+def safe_get_video(client: YtubeAPIClient, url: str, retries: int = 3):
+    for attempt in range(retries):
+        try:
+            return client.get_info(url)
+        except requests.HTTPError as e:
+            if e.response.status_code == 429:
+                print("Rate limit reached. Try again after midnight UTC.")
+                return None
+            elif e.response.status_code == 401:
+                print("Invalid or revoked token. Use /token to check.")
+                return None
+            time.sleep(1)
+        except requests.RequestException:
+            time.sleep(1)
+    return None</code></pre>"""
+
         await callback_query.edit_message_text(
-            "🐍 **Error Handling & Best Practices**\n\n"
-            "```python\n"
-            "# Example 6: Comprehensive error handling\n"
-            "def safe_video_info(client, url_or_query: str):\n"
-            "    max_retries = 3\n"
-            "    retry_delay = 2\n"
-            "    \n"
-            "    for attempt in range(max_retries):\n"
-            "        try:\n"
-            "            # Check if we have requests left\n"
-            "            status = client.check_rate_limit()\n"
-            "            if status['requests_remaining'] < 1:\n"
-            "                return {\n"
-            "                    'error': 'Rate limit exceeded',\n"
-            "                    'reset_time': status['reset_time']\n"
-            "                }\n"
-            "            \n"
-            "            # Attempt to get video info\n"
-            "            result = client.get_video_info(url_or_query)\n"
-            "            \n"
-            "            # Validate result\n"
-            "            if not result.get('url'):\n"
-            "                return {'error': 'No stream URL available'}\n"
-            "            \n"
-            "            return {\n"
-            "                'success': True,\n"
-            "                'data': result,\n"
-            "                'attempts': attempt + 1\n"
-            "            }\n"
-            "            \n"
-            "        except Exception as e:\n"
-            "            error_msg = str(e).lower()\n"
-            "            \n"
-            "            if 'rate limit' in error_msg:\n"
-            "                return {'error': 'Rate limit exceeded'}\n"
-            "            elif 'invalid token' in error_msg:\n"
-            "                return {'error': 'Invalid or expired token'}\n"
-            "            elif 'timeout' in error_msg:\n"
-            "                if attempt < max_retries - 1:\n"
-            "                    print(f\"Timeout on attempt {attempt + 1}, retrying...\")\n"
-            "                    time.sleep(retry_delay)\n"
-            "                    continue\n"
-            "                return {'error': 'Request timeout after retries'}\n"
-            "            else:\n"
-            "                return {'error': f'Unexpected error: {e}'}\n"
-            "    \n"
-            "    return {'error': 'Max retries exceeded'}\n\n"
-            "# Usage example:\n"
-            f"client = YtubeAPIClient('{user_token}')\n"
-            "result = safe_video_info(client, 'https://youtube.com/watch?v=dQw4w9WgXcQ')\n\n"
-            "if result.get('success'):\n"
-            "    print(f\"✅ Success: {result['data']['title']}\")\n"
-            "else:\n"
-            "    print(f\"❌ Error: {result['error']}\")\n"
-            "```",
+            rich_message=InputRichMessage(html=content_html),
             reply_markup=InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("💡 Basic Examples", callback_data="impl_python_examples"),
-                    InlineKeyboardButton("🔄 Advanced Examples", callback_data="impl_python_advanced")
+                    InlineKeyboardButton("💡 Basic Examples", callback_data="impl_python_examples", style=ButtonStyle.PRIMARY),
+                    InlineKeyboardButton("🔄 Advanced Batching", callback_data="impl_python_advanced", style=ButtonStyle.PRIMARY)
                 ],
-                [InlineKeyboardButton("🔙 Back to Implementation", callback_data="api_implementation")]
+                [InlineKeyboardButton("🔙 Back to Implementation", callback_data="api_implementation", style=ButtonStyle.DEFAULT)]
             ])
         )
 
-
     elif data == "back_menu":
-        keyboard = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("🔧 API Implementation", callback_data="api_implementation"),
-                InlineKeyboardButton("📊 Usage Status", callback_data="usage_status")
-            ],
-            [
-                InlineKeyboardButton("🔄 Revoke Token", callback_data="revoke_token"),
-                InlineKeyboardButton("❓ Help", callback_data="help")
-            ],
-            [
-                InlineKeyboardButton("📖 API Docs", callback_data="api_docs")
-            ]
-        ])
-
         await callback_query.answer()
+        content_html = f"""<h1>YT-DLP API Bot Menu</h1>
+<blockquote>Choose an option below to manage your token, inspect usage metrics, or view endpoint documentation.</blockquote>
+
+<table border="1">
+  <tr><th>Feature</th><th>Description</th></tr>
+  <tr><td><b>Implementation</b></td><td>Code examples (cURL, Python, GET)</td></tr>
+  <tr><td><b>Usage Status</b></td><td>Live quota tracking &amp; reset timers</td></tr>
+  <tr><td><b>Documentation</b></td><td>Endpoint parameters &amp; responses</td></tr>
+</table>"""
+
         await callback_query.edit_message_text(
-            "🤖 **YT-DLP API Bot Menu**\n\n"
-            "Choose an option below:",
-            reply_markup=keyboard
+            rich_message=InputRichMessage(html=content_html),
+            reply_markup=build_main_menu_keyboard()
         )
 
     elif data == "admin_refresh_stats":
         if not is_admin(user_id):
+            try:
+                await client.send_rich_message(
+                    chat_id=callback_query.message.chat.id if callback_query.message else user_id,
+                    receiver_user_id=user_id,
+                    rich_message=InputRichMessage(html="<blockquote>❌ <b>Access Denied:</b> Admin privileges required.</blockquote>")
+                )
+            except Exception:
+                pass
             await callback_query.answer("❌ Admin only.", show_alert=True)
             return
 
-        await callback_query.answer("🔄 Refreshing stats...")
+        await callback_query.answer("🔄 Refreshing statistics...")
         try:
             from plugins.admin import _build_stats
-            _, msg2 = await _build_stats(client)
+            _, msg2_html = await _build_stats(client)
 
             keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔄 Refresh Stats", callback_data="admin_refresh_stats")],
+                [InlineKeyboardButton("🔄 Refresh Stats", callback_data="admin_refresh_stats", style=ButtonStyle.PRIMARY)],
             ])
-            await callback_query.edit_message_text(msg2, reply_markup=keyboard)
+            await callback_query.edit_message_text(
+                rich_message=InputRichMessage(html=msg2_html),
+                reply_markup=keyboard
+            )
         except Exception as e:
-            await callback_query.edit_message_text(f"❌ Refresh failed: {str(e)}")
+            await callback_query.edit_message_text(
+                rich_message=InputRichMessage(html=f"<blockquote>❌ <b>Refresh failed:</b> {html.escape(str(e))}</blockquote>")
+            )

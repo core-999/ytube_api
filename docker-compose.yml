@@ -44,6 +44,10 @@ services:
       - web
     depends_on:
       - ytube-api
+    # Inherits the API image, but long-polls Telegram instead of serving HTTP,
+    # so the image's /health check would always fail here.
+    healthcheck:
+      disable: true
 
 networks:
   web:

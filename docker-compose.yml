@@ -11,6 +11,25 @@ services:
     # Traefik load-balances all replicas via the labels below.
     networks:
       - web
+    # Pinned resolvers: 8.8.8.8 was dropping 12-40% of this host's UDP DNS
+    # queries (rate limiting — ICMP to it was clean), and every dropped query
+    # cost a 4-5s stall. Because each stream resolves a fresh per-session
+    # rr*---sn-*.googlevideo.com hostname, that hit ~15-40% of stream starts.
+    # Cloudflare measured 0% loss over 120 queries; 8.8.4.4 stays as fallback.
+    # Set here (not just on the host) because Docker's embedded resolver caches
+    # its upstream list at container start.
+    dns:
+      - 1.1.1.1
+      - 1.0.0.1
+      - 8.8.4.4
+    # timeout:1 caps a dropped-query stall at 1s instead of 5s; rotate spreads
+    # queries across the three servers; single-request-reopen avoids the glibc
+    # parallel A/AAAA same-socket race.
+    dns_opt:
+      - timeout:1
+      - attempts:2
+      - rotate
+      - single-request-reopen
     environment:
       API_HOST: ${API_HOST:-}
       BASE_URL: ${BASE_URL:-}
@@ -43,6 +62,16 @@ services:
     command: ["python3", "bot.py"]
     networks:
       - web
+    # Same resolver pinning as ytube-api — see the rationale above.
+    dns:
+      - 1.1.1.1
+      - 1.0.0.1
+      - 8.8.4.4
+    dns_opt:
+      - timeout:1
+      - attempts:2
+      - rotate
+      - single-request-reopen
     depends_on:
       - ytube-api
     # Inherits the API image, but long-polls Telegram instead of serving HTTP,

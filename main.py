@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Query, Request, HTTPException, Depends
-from fastapi.responses import JSONResponse, RedirectResponse, FileResponse, StreamingResponse
+from fastapi.responses import JSONResponse, RedirectResponse, FileResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 import time
 import asyncio
@@ -9,7 +9,6 @@ import hashlib
 import base64
 import threading
 from typing import Optional
-import httpx
 import uvicorn
 import inspect
 from fastapi.routing import APIRoute
@@ -73,6 +72,12 @@ async def lifespan(app: FastAPI):
         await close_innertube()
     except Exception:
         pass
+    # Same for the shared media-proxy pool.
+    try:
+        from utils.stream_proxy import close_client as close_proxy
+        await close_proxy()
+    except Exception:
+        pass
 
 
 app = FastAPI(
@@ -99,14 +104,97 @@ _FREE_PREFIXES = (
 # replicas behind a non-sticky load balancer. TTL covers the 45s resolver wait + buffer.
 import json as _json
 from tools import get_async_redis
+from utils.bounded_cache import BoundedCache
 
 _STREAM_TTL = 14400  # 4 hours (matches YouTube stream URL lifetime)
 
+# Redis is remote (measured 248-262 ms per GET), so every job lookup used to cost a
+# quarter second of TTFB. Memoise *completed* jobs only: a resolved googlevideo URL is
+# immutable until it is revoked, whereas a pending job is precisely the thing we are
+# waiting to see change — caching that would make the wait loop read stale data. That
+# rule is why no "bypass the cache" flag is needed anywhere.
+# Redis stays authoritative: TTL is short, and any miss falls through to it.
+_JOB_MEMO_TTL = 5.0
+_JOB_MEMO = BoundedCache(maxsize=2048, ttl=_JOB_MEMO_TTL)
+
+# Wakes local waiters the instant extraction finishes instead of on the next poll tick.
+# Extraction runs in the same process that claimed the job, so this covers the normal
+# path; cross-replica waiters still converge via the polling fallback in
+# _await_extracted. LRU eviction is therefore safe (it degrades to polling, at worst).
+_JOB_EVENTS = BoundedCache(maxsize=4096)
+
+# How long a 403 retry waits for re-extraction. Shorter than the cold-start wait: the
+# client is already holding an open request and a player gives up long before 45 s.
+_REFRESH_WAIT_S = 20.0
+
+# Fallback poll interval while waiting for extraction. Deliberately coarse: extraction
+# normally completes in *this* process and sets the local event, so polling only exists
+# to catch a job finished by another replica. Polling faster actively hurt — each poll is
+# a ~250 ms round trip to a remote Redis, and the extra pool churn delayed the
+# extractor's own write (measured: a 150 ms extraction pushed out to 1.8 s by 50-400 ms
+# polling). Waiting on the event costs nothing and reacts instantly.
+_CROSS_REPLICA_POLL_S = 2.0
+
+
+def _job_event(stream_id: str) -> asyncio.Event:
+    ev = _JOB_EVENTS.get(stream_id)
+    if ev is None:
+        ev = asyncio.Event()
+        _JOB_EVENTS[stream_id] = ev
+    return ev
+
 
 async def _job_get(stream_id: str) -> Optional[dict]:
+    cached = _JOB_MEMO.get(stream_id)
+    if cached is not None:
+        return dict(cached)  # copy: callers mutate the job before writing it back
     redis = await get_async_redis()
     raw = await redis.get(f"stream_job:{stream_id}")
-    return _json.loads(raw) if raw else None
+    if not raw:
+        return None
+    job = _json.loads(raw)
+    if job.get("extracted_url"):
+        _JOB_MEMO[stream_id] = dict(job)
+    return job
+
+
+def _job_publish_local(stream_id: str, job: dict) -> None:
+    """Make a completed job visible to *this* process and wake its waiters.
+
+    Split out from the Redis write so a local waiter doesn't have to wait for a ~265 ms
+    round trip to a different continent before it can start streaming. The extracted URL
+    is already valid at this point; Redis only exists to share it with other replicas and
+    later requests, so persisting it is not on the critical path.
+    """
+    _JOB_MEMO[stream_id] = dict(job)
+    _job_event(stream_id).set()
+
+
+def _job_forget_local(stream_id: str) -> None:
+    """Drop local state for a job that is no longer complete (see _refresh_stream_url)."""
+    _JOB_MEMO.pop(stream_id, None)
+    _job_event(stream_id).clear()
+
+
+async def _job_set(stream_id: str, job: dict, *, only_if_exists: bool = False) -> bool:
+    """Persist a job and keep the local memo/waiters consistent with it.
+
+    `only_if_exists` maps to Redis SET XX, so a job whose TTL lapsed while extraction was
+    running is not resurrected.
+    Returns False when XX found no key.
+    """
+    redis = await get_async_redis()
+    stored = await redis.set(
+        f"stream_job:{stream_id}", _json.dumps(job), ex=_STREAM_TTL, xx=only_if_exists
+    )
+    if only_if_exists and not stored:
+        return False
+
+    if job.get("extracted_url"):
+        _job_publish_local(stream_id, job)
+    else:
+        _job_forget_local(stream_id)
+    return True
 
 
 def _encode_stream_id(url: str, mode: str) -> str:
@@ -126,13 +214,26 @@ def _start_background_extraction(stream_id: str, url: str, mode: str):
                 stream_url = await get_stream(url)
 
             if stream_url:
-                redis = await get_async_redis()
-                job = await _job_get(stream_id)
-                if job is not None:  # tolerate TTL expiry under load
-                    job["extracted_url"] = stream_url
-                    job["extracted_time"] = time.time()
-                    await redis.set(f"stream_job:{stream_id}", _json.dumps(job), ex=_STREAM_TTL)
+                job = {
+                    "url": url,
+                    "mode": mode,
+                    "extracted_url": stream_url,
+                    "extracted_time": time.time(),
+                }
+                # Wake local waiters first, then persist. Ordering is the whole point:
+                # the client can begin streaming immediately while the ~265 ms Redis
+                # write completes behind it. This coroutine is already a background task,
+                # so awaiting the write here blocks nobody.
+                _job_publish_local(stream_id, job)
+                # SET XX (not read-modify-write): url/mode are already in hand, and XX
+                # keeps the old "don't resurrect an expired job" behaviour in one trip.
+                if await _job_set(stream_id, job, only_if_exists=True):
                     logging.info(f"[STREAM_RESOLVER] Extracted {mode} URL for {stream_id}")
+                else:
+                    # Job TTL lapsed mid-extraction. The URL is still good for the waiters
+                    # already holding a request, so leave the local memo alone and let it
+                    # age out; just don't recreate the shared key.
+                    logging.info(f"[STREAM_RESOLVER] Job {stream_id} expired before extraction finished")
         except Exception as e:
             logging.error(f"[STREAM_RESOLVER] Failed to extract {mode}: {e}")
 
@@ -157,6 +258,10 @@ async def _ensure_stream_job(url: str, mode: str) -> str:
         nx=True,
     )
     if created:
+        # A fresh pending job supersedes anything this process remembers for that id
+        # (the old key had expired), so clear local state or _job_get would keep
+        # returning the previous, now-unshared URL.
+        _job_forget_local(stream_id)
         _start_background_extraction(stream_id, url, resolved_mode)
     else:
         # A long _STREAM_TTL means a job whose extraction failed would otherwise stay
@@ -169,21 +274,93 @@ async def _ensure_stream_job(url: str, mode: str) -> str:
     return stream_id
 
 
-async def _await_extracted(stream_id: str) -> Optional[dict]:
-    """Job with extracted_url populated (polling up to 45s), or None if it's gone.
+async def _await_extracted(stream_id: str, timeout: float = 45.0) -> Optional[dict]:
+    """Job with extracted_url populated (waiting up to `timeout`), or None if it's gone.
 
     Shared by the resolver (redirects to the URL) and the proxy (streams its bytes).
+
+    The old version slept a fixed 1 s between Redis reads, which was wrong in both
+    directions: too coarse for a ~0.2 s extraction, and every tick paid a ~250 ms round
+    trip to a remote Redis. Tightening the tick made it *worse* — the polls contended
+    with the extractor's own Redis writes. So: block on a local event that extraction
+    sets the moment it finishes (the common case, since the replica that claimed the job
+    is the one extracting), and poll only as a slow fallback for a job finished
+    elsewhere. `_job_set` primes the memo before setting the event, so the `_job_get`
+    below is a local hit rather than another round trip.
     """
     job = await _job_get(stream_id)
-    if job is None:
-        return None
-    if job["extracted_url"] is None:
-        for _ in range(45):  # 45s: background extraction usually lands in 1-2s
-            await asyncio.sleep(1)
-            job = await _job_get(stream_id)
-            if job is None or job["extracted_url"] is not None:
-                break
+    if job is None or job.get("extracted_url"):
+        return job
+
+    event = _job_event(stream_id)
+    deadline = time.monotonic() + timeout
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            await asyncio.wait_for(event.wait(), timeout=min(_CROSS_REPLICA_POLL_S, remaining))
+        except (asyncio.TimeoutError, TimeoutError):
+            pass
+        job = await _job_get(stream_id)
+        if job is None or job.get("extracted_url"):
+            break
     return job
+
+
+# Coalesces concurrent refreshes of the same stream. Without it, N players hitting a
+# revoked URL at once would each invalidate the cache and launch their own extraction,
+# and the rapid repeat requests are themselves what triggers googlevideo's per-IP 403s.
+# Bounded like _JOB_EVENTS rather than refcounted: if an entry is ever evicted the worst
+# case is two concurrent refreshes, i.e. the behaviour we had before coalescing.
+_REFRESH_LOCKS = BoundedCache(maxsize=1024)
+
+
+def _refresh_lock(stream_id: str) -> asyncio.Lock:
+    lock = _REFRESH_LOCKS.get(stream_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _REFRESH_LOCKS[stream_id] = lock
+    return lock
+
+
+async def _refresh_stream_url(stream_id: str, job: dict) -> Optional[dict]:
+    """Drop a revoked stream URL and re-extract it, returning the refreshed job.
+
+    Recovering from a 403 needs all three of these, which is why the previous
+    single-line version could never work:
+
+    1. Invalidate the cache_manager entry. It keys expiry off the `expire` in the URL,
+       and googlevideo revokes URLs well before that — so re-extraction would otherwise
+       be served the same dead URL straight from cache.
+    2. Clear `extracted_url` in the job *before* re-extracting, so `_await_extracted`
+       actually waits instead of instantly returning the dead URL it already sees.
+    3. Only then start extraction.
+    """
+    url, mode = job.get("url"), job.get("mode")
+    if not url or not mode:
+        return None
+
+    dead_url = job.get("extracted_url")
+    async with _refresh_lock(stream_id):
+        # A concurrent request may have already refreshed this while we queued.
+        current = await _job_get(stream_id)
+        if current and current.get("extracted_url") not in (None, dead_url):
+            return current
+
+        try:
+            from utils.cache_manager import invalidate
+            await invalidate(url, "video:" if mode == "video" else "audio:")
+        except Exception as e:
+            logging.error(f"[STREAM_PROXY] Cache invalidation failed for {stream_id}: {e}")
+
+        pending = dict(job)
+        pending["extracted_url"] = None
+        pending["extracted_time"] = None
+        await _job_set(stream_id, pending)
+
+        _start_background_extraction(stream_id, url, mode)
+        return await _await_extracted(stream_id, timeout=_REFRESH_WAIT_S)
 
 
 def _make_https_url(url_obj) -> str:
@@ -214,73 +391,15 @@ async def _resolve_stream_url_for_info(request: Request, url: str, redirect: boo
     return _make_temp_proxy(request, stream_id)
 
 
-async def _proxy_stream_response(target_url: str, request: Request) -> Response:
+async def _proxy_stream_response(target_url: str, request: Request, started: Optional[float] = None) -> Response:
     """Stream media chunks from target_url back to client with Range request support."""
-    req_headers = {}
-    range_header = request.headers.get("range")
-    if range_header:
-        req_headers["range"] = range_header
+    from utils.stream_proxy import proxy_stream
 
-    user_agent = request.headers.get("user-agent") or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    req_headers["user-agent"] = user_agent
-
-    client = httpx.AsyncClient(
-        timeout=httpx.Timeout(connect=15.0, read=None, write=30.0, pool=30.0),
-        follow_redirects=True,
-    )
-
-    try:
-        upstream_req = client.build_request("GET", target_url, headers=req_headers)
-        upstream_resp = await client.send(upstream_req, stream=True)
-    except Exception as e:
-        await client.aclose()
-        logging.error(f"[STREAM_PROXY] Upstream connection error: {e}")
-        return JSONResponse(
-            status_code=502,
-            content={"error": "Bad Gateway", "message": f"Failed to connect to stream source: {str(e)}"}
-        )
-
-    if upstream_resp.status_code in (403, 404, 410):
-        status = upstream_resp.status_code
-        await upstream_resp.aclose()
-        await client.aclose()
-        return JSONResponse(
-            status_code=status,
-            content={"error": f"Upstream returned HTTP {status}"}
-        )
-
-    # Headers to forward back to client
-    resp_headers = {}
-    for h in ("content-type", "content-length", "content-range", "accept-ranges", "content-disposition", "cache-control"):
-        val = upstream_resp.headers.get(h)
-        if val is not None:
-            resp_headers[h] = val
-
-    if "accept-ranges" not in resp_headers:
-        resp_headers["accept-ranges"] = "bytes"
-
-    async def stream_generator():
-        try:
-            async for chunk in upstream_resp.aiter_bytes(chunk_size=128 * 1024):
-                yield chunk
-        except (asyncio.CancelledError, GeneratorExit):
-            pass
-        except Exception as err:
-            logging.debug(f"[STREAM_PROXY] Stream disconnected: {err}")
-        finally:
-            try:
-                await upstream_resp.aclose()
-            except Exception:
-                pass
-            try:
-                await client.aclose()
-            except Exception:
-                pass
-
-    return StreamingResponse(
-        stream_generator(),
-        status_code=upstream_resp.status_code,
-        headers=resp_headers,
+    return await proxy_stream(
+        target_url,
+        range_header=request.headers.get("range"),
+        user_agent=request.headers.get("user-agent"),
+        started=started,
     )
 
 
@@ -303,9 +422,20 @@ async def get_current_user(token: Optional[str] = Query(None)):
         return None
 
 
+# Distinguishes "the middleware never ran for this request" from "it ran and found no
+# user", so an anonymous request can't be mistaken for an unresolved one (or vice versa).
+_UNRESOLVED = object()
+
+
 async def require_token(request: Request):
     """Require valid token (header or ?token=) for protected endpoints"""
-    user_id = await get_current_user(_token_from_request(request))
+    # RateLimitMiddleware has already resolved this token for the current request, and
+    # each lookup is a ~290 ms round trip to a remote Redis. Reuse its result instead of
+    # paying for it twice; fall back to a lookup for paths the middleware skips
+    # (FREE_PATHS / _FREE_PREFIXES) and for direct calls in tests.
+    user_id = getattr(request.state, "auth_user_id", _UNRESOLVED)
+    if user_id is _UNRESOLVED:
+        user_id = await get_current_user(_token_from_request(request))
     if not user_id:
         raise HTTPException(
             status_code=401,
@@ -327,6 +457,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         token   = _token_from_request(request)
         user_id = await get_current_user(token)
+        # Hand the result to the require_token dependency (same request, same token, so
+        # the answer cannot differ) to avoid a second remote-Redis lookup.
+        request.state.auth_user_id = user_id
 
         if not user_id:
             required_args, optional_args = get_arguments_for_request(request)
@@ -658,6 +791,7 @@ async def stream_redirect(
 @app.get("/stream/proxy/{stream_id}", name="stream_proxy_by_id")
 async def stream_resolver(request: Request, stream_id: str):
     """Resolver endpoint for proxied streaming."""
+    started = time.monotonic()
     job = await _await_extracted(stream_id)
     if job is None:
         return JSONResponse(
@@ -671,13 +805,20 @@ async def stream_resolver(request: Request, stream_id: str):
             status_code=500
         )
 
-    resp = await _proxy_stream_response(job["extracted_url"], request)
-    if resp.status_code == 403 and job.get("url") and job.get("mode"):
-        logging.info(f"[STREAM_PROXY] Got 403 from upstream for {stream_id}, refreshing stream URL...")
-        _start_background_extraction(stream_id, job["url"], job["mode"])
-        refreshed_job = await _await_extracted(stream_id)
-        if refreshed_job and refreshed_job.get("extracted_url") and refreshed_job["extracted_url"] != job["extracted_url"]:
-            resp = await _proxy_stream_response(refreshed_job["extracted_url"], request)
+    resp = await _proxy_stream_response(job["extracted_url"], request, started=started)
+
+    # Revoked-URL recovery, capped at a single retry: googlevideo answers 403/410 for a
+    # URL it has invalidated (seen within ~5 s of extraction under per-IP rate limiting).
+    # 404 is deliberately excluded — that is the video being gone, and re-extracting it
+    # would just fail again more slowly.
+    if resp.status_code in (403, 410):
+        logging.info(f"[STREAM_PROXY] Got {resp.status_code} from upstream for {stream_id}, refreshing stream URL...")
+        refreshed_job = await _refresh_stream_url(stream_id, job)
+        new_url = (refreshed_job or {}).get("extracted_url")
+        if new_url and new_url != job["extracted_url"]:
+            resp = await _proxy_stream_response(new_url, request, started=started)
+        else:
+            logging.warning(f"[STREAM_PROXY] Refresh for {stream_id} produced no new URL")
 
     return resp
 

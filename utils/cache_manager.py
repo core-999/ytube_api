@@ -8,7 +8,7 @@ from urllib.parse import urlparse, parse_qs
 from utils.innertube import resolve as innertube_resolve
 from utils.ytdlp_runner import resolve_g
 
-__all__ = ["get_stream", "get_video_stream"]
+__all__ = ["get_stream", "get_video_stream", "invalidate"]
 
 logger = logging.getLogger("ytube_api.Stream")
 
@@ -98,6 +98,31 @@ def _write_cache(url: str, stream_url: str, prefix: str = ""):
         logger.info(f"[CACHE WRITE] {prefix}{url[:80]}... (expires in {int(expire - time.time())}s)")
     except Exception as e:
         logger.error(f"[CACHE WRITE ERROR] {e}")
+
+
+async def invalidate(url: str, prefix: str = "") -> None:
+    """Forget a cached stream URL so the next resolve re-extracts.
+
+    Needed because googlevideo can revoke a URL (403/410) long before the `expire`
+    stamped into it, and both cache layers key off that stamp — so without this an
+    already-dead URL keeps being served as a fresh cache hit until it "expires".
+    Both layers must go: Redis is checked first, the file cache would repopulate it.
+    """
+    try:
+        os.remove(_cache_path(url, prefix))
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        logger.debug(f"[CACHE INVALIDATE] file remove failed: {e}")
+
+    redis = await _get_redis()
+    if redis:
+        try:
+            await redis.delete(f"cache:{prefix}{url}")
+        except Exception as e:
+            logger.error(f"[CACHE INVALIDATE] redis delete failed: {e}")
+
+    logger.info(f"[CACHE INVALIDATE] {prefix}{url[:80]}")
 
 
 async def _run_yt_dlp(url: str, format_selector: str, cookies: str | None):
